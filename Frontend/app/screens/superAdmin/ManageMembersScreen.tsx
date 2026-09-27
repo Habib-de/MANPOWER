@@ -13,7 +13,7 @@ import {
 import { router } from 'expo-router';
 import SuperAdminBottomNav from '../../components/SuperAdminBottomNav';
 
-const BASE_URL = 'http://172.20.10.2:8080/api';
+const BASE_URL = 'http://192.168.0.101:8080/api';
 
 type Member = {
   id: string;

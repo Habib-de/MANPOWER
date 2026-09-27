@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 
-const BASE_URL = 'http://172.20.10.2:8080/api';
+const BASE_URL = 'http://192.168.0.101:8080/api';
 
 export default function EditMemberScreen() {
   const params = useLocalSearchParams();

@@ -20,8 +20,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { ProgressChart, BarChart } from 'react-native-chart-kit';
 import GroupAdminBottomNav from '../../components/GroupAdminBottomNav';
 
-const BASE_URL = 'http://172.20.10.2:8080/api';
-const FLASK_CHURN_URL = 'http://172.20.10.2:5001';
+const BASE_URL = 'http://192.168.0.101:8080/api';
+const FLASK_CHURN_URL = 'http://192.168.0.101:5001';
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const CHART_WIDTH = SCREEN_WIDTH - 32;
 

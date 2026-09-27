@@ -17,7 +17,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Picker } from '@react-native-picker/picker';
 import { Ionicons } from '@expo/vector-icons';
 
-const BASE_URL = 'http://172.20.10.2:8080/api';
+const BASE_URL = 'http://192.168.0.101:8080/api';
 
 // Helper function for alerts
 const showAlert = (title: string, message: string, onOk?: () => void) => {

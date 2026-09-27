@@ -18,9 +18,9 @@ import MemberBottomNav from '../../components/MemberBottomNav';
 // Suppress warnings
 LogBox.ignoreLogs(['Unexpected text node', 'aria-hidden']);
 
-// Use the SAME IP as your login screen (172.20.10.2)
-const BASE_URL = 'http://172.20.10.2:8080/api';
-const ORCHESTRATOR_URL = 'http://172.20.10.2:5000/api/v1';
+// Use the SAME IP as your login screen (192.168.0.101)
+const BASE_URL = 'http://192.168.0.101:8080/api';
+const ORCHESTRATOR_URL = 'http://192.168.0.101:5000/api/v1';
 
 // ✅ UPDATED: DecisionLog interface with per-application rate fields
 interface DecisionLog {

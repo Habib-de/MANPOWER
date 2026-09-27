@@ -14,8 +14,8 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 
-const BASE_URL = 'http://172.20.10.2:8080/api';
-const ORCHESTRATOR_URL = 'http://172.20.10.2:5000/api/v1';
+const BASE_URL = 'http://192.168.0.101:8080/api';
+const ORCHESTRATOR_URL = 'http://192.168.0.101:5000/api/v1';
 
 // ✅ UPDATED: DecisionLog interface with per-application rate fields
 interface DecisionLog {

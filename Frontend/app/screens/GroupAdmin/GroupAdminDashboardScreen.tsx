@@ -19,7 +19,7 @@ import { AuthContext } from '../../../app/_layout';
 import GroupAdminBottomNav from '../../components/GroupAdminBottomNav';
 import { Ionicons } from '@expo/vector-icons';
 
-const BASE_URL = 'http://172.20.10.2:8080/api';
+const BASE_URL = 'http://192.168.0.101:8080/api';
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 interface Member {

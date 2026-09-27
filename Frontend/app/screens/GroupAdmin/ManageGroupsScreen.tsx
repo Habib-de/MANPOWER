@@ -16,7 +16,7 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import GroupAdminBottomNav from '../../components/GroupAdminBottomNav';
 
-const API_BASE_URL = 'http://172.20.10.2:8080/api';
+const API_BASE_URL = 'http://192.168.0.101:8080/api';
 
 // Same alert style as your other screens
 const showAlert = (title: string, message: string, onOk?: () => void) => {

@@ -79,7 +79,7 @@ public class ScheduledTaskService {
     /**
      * Run daily at 1:00 AM - Check for late contributions and apply penalties
      */
-    @Scheduled(cron = "0 10 17 * * *")
+    @Scheduled(cron = "0 0 1 * * *")
     @Transactional
     public void checkAndApplyPenalties() {
         System.out.println("🕐 Running scheduled task: Checking for late contributions and applying penalties...");
@@ -149,7 +149,7 @@ public class ScheduledTaskService {
     /**
      * Run every Monday at 9:00 AM - Send warnings to group admins about members with multiple late contributions
      */
-    @Scheduled(cron = "0 10 17 * * MON")
+    @Scheduled(cron = "0 0 9 * * MON")
     @Transactional
     public void sendAdminWarnings() {
         System.out.println("🕐 Running scheduled task: Sending admin warnings...");
@@ -194,7 +194,7 @@ public class ScheduledTaskService {
     /**
      * Run daily at 2:00 AM - Generate new pending contributions for groups with schedules
      */
-    @Scheduled(cron = "0 10 17 * * *")
+    @Scheduled(cron = "0 0 2 * * *")
     @Transactional
     public void generateScheduledContributions() {
         System.out.println("🕐 Running scheduled task: Generating pending contributions...");

@@ -16,7 +16,7 @@ import { useNavigation } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 
 // IMPORTANT: Replace with your actual backend IP or hostname if different
-const API_BASE_URL = 'http://172.20.10.2:8080/api';
+const API_BASE_URL = 'http://192.168.0.101:8080/api';
 
 function CreateGroupScreen() {
   const navigation = useNavigation<StackNavigationProp<any>>();

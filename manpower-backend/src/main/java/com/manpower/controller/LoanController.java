@@ -16,7 +16,7 @@ import java.util.UUID;
 import java.util.Map;
 import java.util.HashMap;
 
-@CrossOrigin(origins = {"http://localhost:8081", "http://172.20.10.2:8081"})
+@CrossOrigin(origins = {"http://localhost:8081", "http://192.168.0.101:8081"})
 @RestController
 @RequestMapping("/api/loans")
 public class LoanController {

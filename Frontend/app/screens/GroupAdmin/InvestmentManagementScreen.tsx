@@ -27,7 +27,7 @@ import InvestmentRecommendations from '../../../components/InvestmentRecommendat
 import { InvestmentContext } from '../../../services/geminiService';
 
 const { width } = Dimensions.get('window');
-const API_BASE_URL = 'http://172.20.10.2:8080/api';
+const API_BASE_URL = 'http://192.168.0.101:8080/api';
 
 // ============ TYPES ============
 type Group = {

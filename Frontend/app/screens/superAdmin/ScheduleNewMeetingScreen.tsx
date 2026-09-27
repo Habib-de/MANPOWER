@@ -14,7 +14,7 @@ import {
 import SuperAdminBottomNav from '../../components/SuperAdminBottomNav';
 import { useRouter } from 'expo-router';
 
-const BASE_URL = 'http://172.20.10.2:8080/api';
+const BASE_URL = 'http://192.168.0.101:8080/api';
 
 // Simulated session (can be dynamic later)
 const userRole: 'SuperAdmin' | 'GroupAdmin' = 'GroupAdmin';

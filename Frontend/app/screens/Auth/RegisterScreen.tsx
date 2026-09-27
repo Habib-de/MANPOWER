@@ -19,7 +19,7 @@ import { AuthStackParamList } from '../../navigation/AuthNavigator';
 
 type RegisterScreenNavigationProp = StackNavigationProp<AuthStackParamList, 'Register'>;
 
-const API_BASE_URL = 'http://172.20.10.2:8080/api';
+const API_BASE_URL = 'http://192.168.0.101:8080/api';
 
 // ADD THIS HELPER FUNCTION at the top of the file (outside component)
 const showAlert = (title: string, message: string, onOk?: () => void) => {

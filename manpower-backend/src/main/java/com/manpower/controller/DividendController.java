@@ -14,7 +14,7 @@ import java.math.BigDecimal;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
-@CrossOrigin(origins = {"http://localhost:8081", "http://172.20.10.2:8081"})
+@CrossOrigin(origins = {"http://localhost:8081", "http://192.168.0.101:8081"})
 @RestController
 @RequestMapping("/api/dividends")
 public class DividendController {

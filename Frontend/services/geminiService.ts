@@ -3,7 +3,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 
 // ⚠️ REPLACE THIS WITH YOUR NEW API KEY (NEVER SHARE IT PUBLICLY!)
 // Get your API key from https://makersuite.google.com/app/apikey
-const API_KEY = 'AQ.Ab8RN6L8Umueq6dKBG92fMMLLFzOFUqKvo_oVsdPjO5eRs2dGg';
+const API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY || '';
 const genAI = new GoogleGenerativeAI(API_KEY);
 
 export interface InvestmentContext {
