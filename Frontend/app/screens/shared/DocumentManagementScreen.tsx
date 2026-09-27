@@ -13,12 +13,31 @@ import {
   Image,
   Linking,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 
-const BASE_URL = 'http://192.168.0.101:8080/api';
+const BASE_URL = 'http://172.20.10.2:8080/api';
+
+// ✅ Cross-platform alert function (same as meetings and expense screens)
+const showAlert = (title: string, message: string, buttons?: any[]) => {
+  console.log(`🔔 Alert: ${title} - ${message}`);
+  if (Platform.OS === 'web') {
+    if (buttons && buttons.length > 0) {
+      const result = window.confirm(`${title}\n${message}`);
+      if (result && buttons[0]?.onPress) {
+        buttons[0].onPress();
+      }
+    } else {
+      window.alert(`${title}\n${message}`);
+    }
+  } else {
+    Alert.alert(title, message, buttons || [{ text: 'OK' }]);
+  }
+};
 
 // Types based on your API
 interface GroupMember {
@@ -67,7 +86,6 @@ interface Document {
   mansoftTenantId: string;
 }
 
-// User interface based on your login
 interface User {
   email: string;
   role: string;
@@ -76,9 +94,8 @@ interface User {
   lastName: string;
 }
 
-// API service using your BASE_URL
+// API service
 const documentAPI = {
-  // Fetch documents based on user role
   async fetchDocuments(userEmail: string): Promise<Document[]> {
     try {
       const response = await fetch(`${BASE_URL}/documents?userEmail=${encodeURIComponent(userEmail)}`);
@@ -93,7 +110,6 @@ const documentAPI = {
     }
   },
 
-  // Delete document with user context
   async deleteDocument(id: string, userEmail: string): Promise<void> {
     try {
       const response = await fetch(`${BASE_URL}/documents/${id}?userEmail=${encodeURIComponent(userEmail)}`, {
@@ -109,7 +125,6 @@ const documentAPI = {
     }
   },
 
-  // Upload document with user context
   async uploadDocument(documentData: FormData, userEmail: string): Promise<Document> {
     try {
       const url = `${BASE_URL}/documents?userEmail=${encodeURIComponent(userEmail)}`;
@@ -149,6 +164,15 @@ export default function DocumentManagementScreen(): React.JSX.Element {
   const [uploading, setUploading] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
 
+  // ✅ State for Delete Confirmation Modal
+  const [deleteModalVisible, setDeleteModalVisible] = useState(false);
+  const [deleteData, setDeleteData] = useState<{
+    document: Document;
+    documentId: string;
+    documentName: string;
+  } | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+
   // Load user data and documents on component mount
   useEffect(() => {
     loadUserData();
@@ -173,74 +197,156 @@ export default function DocumentManagementScreen(): React.JSX.Element {
         setCurrentUser(user);
         await loadDocuments(user);
       } else {
-        Alert.alert('Error', 'User data not found. Please login again.');
-        router.replace('/login');
+        showAlert('Error', 'User data not found. Please login again.', [
+          { text: 'OK', onPress: () => router.replace('/login') }
+        ]);
       }
     } catch (error) {
       console.error('Error loading user data:', error);
-      Alert.alert('Error', 'Failed to load user data');
+      showAlert('Error', 'Failed to load user data');
     }
   };
 
   const loadDocuments = async (user: User) => {
     try {
       setLoading(true);
+      console.log('📡 Fetching documents for:', user.email);
       const docs = await documentAPI.fetchDocuments(user.email);
+      console.log('✅ Documents loaded:', docs.length);
       setDocuments(docs);
     } catch (error) {
-      console.error('Error loading documents:', error);
-      Alert.alert('Error', typeof error === 'object' && error !== null && 'message' in error ? String((error as { message?: string }).message) : 'Failed to load documents');
+      console.error('❌ Error loading documents:', error);
+      showAlert('Error', 'Failed to load documents');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleDelete = async (document: Document) => {
+  // ✅ DELETE - Opens confirmation modal
+  const handleDelete = (document: Document) => {
     if (!currentUser) {
-      Alert.alert('Error', 'User not found');
+      showAlert('Error', 'User not found');
       return;
     }
 
-    Alert.alert(
-      'Delete Document',
-      `Are you sure you want to delete "${document.fileName}"?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await documentAPI.deleteDocument(document.id, currentUser.email);
-              // Remove from local state
-              setDocuments(prev => prev.filter(doc => doc.id !== document.id));
-              Alert.alert('Success', 'Document deleted successfully');
-            } catch (error) {
-              Alert.alert('Error', typeof error === 'object' && error !== null && 'message' in error ? String((error as { message?: string }).message) : 'Failed to delete document');
-            }
-          },
+    console.log('🗑️ Delete document clicked:', { 
+      id: document.id, 
+      fileName: document.fileName,
+    });
+    
+    setDeleteData({
+      document: document,
+      documentId: document.id,
+      documentName: document.fileName,
+    });
+    setDeleteModalVisible(true);
+  };
+
+  // ✅ Perform the actual delete
+  const performDelete = async () => {
+    if (!deleteData || !currentUser) return;
+    
+    const { document, documentId, documentName } = deleteData;
+    
+    console.log('🚀 Starting delete process for document:', { documentId, documentName });
+    
+    try {
+      setDeleteLoading(true);
+      setLoading(true);
+      
+      const deleteUrl = `${BASE_URL}/documents/${documentId}?userEmail=${encodeURIComponent(currentUser.email)}`;
+      console.log('📡 DELETE URL:', deleteUrl);
+      
+      const response = await fetch(deleteUrl, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
         },
-      ]
-    );
+      });
+
+      console.log('📥 Delete response status:', response.status);
+      console.log('📥 Delete response ok:', response.ok);
+
+      // ✅ Get response body
+      let responseBody = null;
+      let responseText = '';
+      try {
+        responseText = await response.text();
+        console.log('📥 Response body (raw):', responseText || '(empty)');
+        if (responseText) {
+          try {
+            responseBody = JSON.parse(responseText);
+            console.log('📥 Response body (parsed):', JSON.stringify(responseBody, null, 2));
+          } catch (parseError) {
+            console.log('📥 Response is not valid JSON, using raw text');
+            responseBody = responseText;
+          }
+        }
+      } catch (bodyError) {
+        console.error('❌ Could not read response body:', bodyError);
+      }
+
+      // ✅ Handle success
+      if (response.ok || response.status === 200 || response.status === 204) {
+        console.log('✅ Delete successful on server');
+        
+        // ✅ Remove from state
+        setDocuments(prev => {
+          const updated = prev.filter(doc => doc.id !== documentId);
+          console.log(`📋 Documents before deletion: ${prev.length}`);
+          console.log(`📋 Documents after deletion: ${updated.length} remaining`);
+          return updated;
+        });
+        
+        setDeleteModalVisible(false);
+        setDeleteData(null);
+        
+        const successMessage = responseBody?.message || `Document "${documentName}" deleted successfully.`;
+        showAlert('Success', successMessage);
+      } else {
+        console.error('❌ Delete failed with status:', response.status);
+        let errorMessage = `Failed to delete document (Status: ${response.status})`;
+        
+        if (responseBody) {
+          if (typeof responseBody === 'object' && responseBody.message) {
+            errorMessage = responseBody.message;
+          } else if (typeof responseBody === 'string') {
+            errorMessage = responseBody;
+          }
+        }
+        showAlert('Error', errorMessage);
+      }
+    } catch (error) {
+      console.error('❌ Exception in delete document:', error);
+      showAlert(
+        'Error', 
+        `Failed to delete document: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    } finally {
+      setDeleteLoading(false);
+      setLoading(false);
+      console.log('🏁 Delete process completed');
+    }
   };
 
   const handleDownload = (filePathUrl: string) => {
-  const absoluteUrl = `${BASE_URL.replace('/api', '')}${filePathUrl}`;
-  Linking.openURL(absoluteUrl).catch(() => 
-    Alert.alert('Error', 'Unable to download file.')
-  );
-};
+    const absoluteUrl = `${BASE_URL.replace('/api', '')}${filePathUrl}`;
+    Linking.openURL(absoluteUrl).catch(() => 
+      showAlert('Error', 'Unable to download file.')
+    );
+  };
 
-const handleOpen = (filePathUrl: string) => {
-  const absoluteUrl = `${BASE_URL.replace('/api', '')}${filePathUrl}`;
-  Linking.openURL(absoluteUrl).catch(() => 
-    Alert.alert('Error', 'Unable to open file.')
-  );
-};
+  const handleOpen = (filePathUrl: string) => {
+    const absoluteUrl = `${BASE_URL.replace('/api', '')}${filePathUrl}`;
+    Linking.openURL(absoluteUrl).catch(() => 
+      showAlert('Error', 'Unable to open file.')
+    );
+  };
 
   const handleUploadFromDevice = async () => {
     if (!currentUser) {
-      Alert.alert('Error', 'User not found');
+      showAlert('Error', 'User not found');
       return;
     }
 
@@ -254,19 +360,15 @@ const handleOpen = (filePathUrl: string) => {
       if (res.assets && res.assets.length > 0) {
         const file = res.assets[0];
         
-        // Convert file to Blob first
         const response = await fetch(file.uri);
         const blob = await response.blob();
         
-        // Create FormData with Blob
         const formData = new FormData();
         formData.append('file', blob, file.name);
         
-        // Build URL with user context only
         const fileType = getFileType(file.name);
         const queryParams = new URLSearchParams();
         
-        // Add user email for authentication
         queryParams.append('userEmail', currentUser.email);
         
         if (file.name) {
@@ -281,20 +383,15 @@ const handleOpen = (filePathUrl: string) => {
 
         console.log('Upload URL:', url);
         console.log('Using blob with file:', file.name);
-        console.log('User context:', { 
-          userEmail: currentUser.email,
-          fileName: file.name, 
-          documentType: fileType,
-        });
 
         const uploadedDoc = await documentAPI.uploadDocument(formData, currentUser.email);
         
         setDocuments(prev => [uploadedDoc, ...prev]);
-        Alert.alert('Success', `Document "${file.name}" uploaded successfully`);
+        showAlert('Success', `Document "${file.name}" uploaded successfully`);
       }
     } catch (err) {
       console.error('Upload error:', err);
-      Alert.alert(
+      showAlert(
         'Upload Failed',
         typeof err === 'object' && err !== null && 'message' in err
           ? String((err as { message?: string }).message)
@@ -323,8 +420,6 @@ const handleOpen = (filePathUrl: string) => {
     return `${uploadedBy.firstName} ${uploadedBy.lastName}`.trim() || 'Unknown User';
   };
 
-  // For Group Admin, they only see their group's documents
-  // So available groups will only be their group + 'All'
   const userGroup = documents[0]?.group?.groupName || currentUser?.groupId;
   const availableGroups = ['All', userGroup].filter((g): g is string => typeof g === 'string' && !!g);
 
@@ -337,28 +432,100 @@ const handleOpen = (filePathUrl: string) => {
     if (type === 'From Device') handleUploadFromDevice();
     else {
       setUploadModalVisible(false);
-      Alert.alert('Coming Soon', `${type} upload will be implemented soon`);
+      showAlert('Coming Soon', `${type} upload will be implemented soon`);
     }
   };
 
-  // Check if user can delete document (for UI indication)
   const canUserDeleteDocument = (document: Document): boolean => {
     if (!currentUser) return false;
     
-    // Super Admin can delete any document
     if (currentUser.role === 'SuperAdmin') {
       return true;
     }
     
-    // Group Admin can only delete documents from their group
     if (currentUser.role === 'GroupAdmin' && 
         currentUser.groupId && 
         document.group.id === currentUser.groupId) {
       return true;
     }
     
-    // Regular members cannot delete documents
     return false;
+  };
+
+  // ✅ Render delete confirmation modal
+  const renderDeleteModal = () => {
+    if (!deleteModalVisible || !deleteData) return null;
+
+    return (
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={deleteModalVisible}
+        onRequestClose={() => {
+          setDeleteModalVisible(false);
+          setDeleteData(null);
+        }}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContainer}>
+            <View style={styles.modalHeader}>
+              <Ionicons name="warning-outline" size={50} color="#F44336" />
+              <Text style={styles.modalTitle}>Delete Document</Text>
+            </View>
+
+            <View style={styles.modalBody}>
+              <Text style={styles.modalText}>
+                Are you sure you want to delete{' '}
+                <Text style={styles.modalHighlight}>
+                  "{deleteData.documentName}"
+                </Text>
+                ?
+              </Text>
+              <Text style={styles.modalWarning}>
+                ⚠️ This action cannot be undone.
+              </Text>
+              
+              <View style={styles.debugContainer}>
+                <Text style={styles.debugTitle}>🔍 Document Info:</Text>
+                <Text style={styles.debugText}>Document ID: {deleteData.documentId}</Text>
+                <Text style={styles.debugText}>Name: {deleteData.documentName}</Text>
+                <Text style={styles.debugText}>User: {currentUser?.email}</Text>
+                <Text style={styles.debugText}>Role: {currentUser?.role}</Text>
+              </View>
+            </View>
+
+            <View style={styles.modalFooter}>
+              <TouchableOpacity
+                style={[styles.modalButton, styles.modalCancelButton]}
+                onPress={() => {
+                  console.log('❌ Delete cancelled by user');
+                  setDeleteModalVisible(false);
+                  setDeleteData(null);
+                }}
+                disabled={deleteLoading}
+              >
+                <Text style={styles.modalCancelButtonText}>Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.modalButton, styles.modalDangerButton, deleteLoading && styles.buttonDisabled]}
+                onPress={performDelete}
+                disabled={deleteLoading}
+              >
+                {deleteLoading ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <>
+                    <Ionicons name="trash-outline" size={20} color="#fff" />
+                    <Text style={styles.modalDangerButtonText}>Delete</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    );
   };
 
   const renderItem = ({ item }: { item: Document }) => (
@@ -371,7 +538,6 @@ const handleOpen = (filePathUrl: string) => {
         </Text>
         <Text style={styles.docType}>Type: {item.documentType}</Text>
         
-        {/* Show group admin badge if document belongs to user's group */}
         {currentUser?.groupId && item.group.id === currentUser.groupId && (
           <Text style={styles.yourGroupBadge}>Your Group</Text>
         )}
@@ -427,7 +593,6 @@ const handleOpen = (filePathUrl: string) => {
             {currentUser.firstName} {currentUser.lastName} ({currentUser.role})
           </Text>
           <TouchableOpacity onPress={() => {
-            // Navigate to appropriate dashboard based on role
             if (currentUser.role === 'SuperAdmin') {
               router.push('/(superadmin)/dashboard');
             } else if (currentUser.role === 'GroupAdmin') {
@@ -452,7 +617,6 @@ const handleOpen = (filePathUrl: string) => {
           }
         </Text>
 
-        {/* Search & Filter */}
         <TextInput
           style={styles.searchBar}
           placeholder="Search documents..."
@@ -460,7 +624,6 @@ const handleOpen = (filePathUrl: string) => {
           onChangeText={setSearchQuery}
         />
         
-        {/* Only show filter if user has multiple groups or is SuperAdmin */}
         {(availableGroups.length > 1 || currentUser.role === 'SuperAdmin') && (
           <View style={styles.filterRow}>
             {availableGroups.map((group) => (
@@ -480,14 +643,12 @@ const handleOpen = (filePathUrl: string) => {
           </View>
         )}
 
-        {/* Loading State */}
         {loading ? (
           <View style={styles.loadingContainer}>
             <ActivityIndicator size="large" color="#2E7D32" />
             <Text style={styles.loadingText}>Loading documents...</Text>
           </View>
         ) : (
-          /* Document List */
           <FlatList
             data={filteredDocs}
             keyExtractor={(item) => item.id}
@@ -509,7 +670,6 @@ const handleOpen = (filePathUrl: string) => {
           />
         )}
 
-        {/* Upload Button - Only show for SuperAdmin and GroupAdmin */}
         {(currentUser.role === 'SuperAdmin' || currentUser.role === 'GroupAdmin') && (
           <Pressable 
             style={[styles.uploadButton, uploading && styles.uploadButtonDisabled]} 
@@ -529,9 +689,9 @@ const handleOpen = (filePathUrl: string) => {
       <Modal animationType="slide" transparent visible={uploadModalVisible}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Choose Upload Method</Text>
+            {/* <Text style={styles.modalTitle}>Choose Upload Method</Text> */}
 
-            {['From Device', 'From Cloud', 'From Link'].map((type) => (
+            {['From Device'].map((type) => (
               <TouchableOpacity
                 key={type}
                 style={styles.modalOption}
@@ -553,13 +713,12 @@ const handleOpen = (filePathUrl: string) => {
         </View>
       </Modal>
 
-      {/* Bottom Nav - Will need to update based on user role */}
-      {/* <SuperAdminBottomNav current="documents" /> */}
+      {/* Delete Confirmation Modal */}
+      {renderDeleteModal()}
     </SafeAreaView>
   );
 }
 
-// ... keep all your existing styles exactly as they were
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
@@ -671,6 +830,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
   },
   docName: {
     fontSize: 16,
@@ -753,7 +916,7 @@ const styles = StyleSheet.create({
     padding: 20,
     alignItems: 'center',
   },
-  modalTitle: {
+  modalCardTitle: {
     fontSize: 18,
     fontWeight: 'bold',
     marginBottom: 15,
@@ -805,5 +968,96 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     color: '#999',
     fontSize: 14,
+  },
+  // ✅ Delete Modal Styles
+  modalContainer: {
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    padding: 24,
+    width: '85%',
+    maxWidth: 400,
+    elevation: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+  },
+  modalHeader: {
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  modalTitle: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: '#333',
+    marginTop: 8,
+  },
+  modalBody: {
+    marginBottom: 24,
+  },
+  modalText: {
+    fontSize: 16,
+    color: '#333',
+    textAlign: 'center',
+    lineHeight: 24,
+  },
+  modalHighlight: {
+    fontWeight: 'bold',
+    color: '#D32F2F',
+  },
+  modalWarning: {
+    fontSize: 14,
+    color: '#F44336',
+    textAlign: 'center',
+    marginTop: 12,
+  },
+  modalFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  modalButton: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+  },
+  modalCancelButtonText: {
+    color: '#666',
+    fontWeight: '600',
+    fontSize: 16,
+  },
+  modalDangerButton: {
+    backgroundColor: '#F44336',
+  },
+  modalDangerButtonText: {
+    color: '#fff',
+    fontWeight: 'bold',
+    fontSize: 16,
+    marginLeft: 8,
+  },
+  debugContainer: {
+    backgroundColor: '#f5f5f5',
+    padding: 12,
+    borderRadius: 8,
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+  },
+  debugTitle: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#666',
+    marginBottom: 4,
+  },
+  debugText: {
+    fontSize: 11,
+    color: '#888',
+    fontFamily: Platform.OS === 'web' ? 'monospace' : 'Courier',
+  },
+  buttonDisabled: {
+    opacity: 0.6,
   },
 });

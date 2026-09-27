@@ -14,13 +14,13 @@ import {
   Dimensions,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { AuthContext } from '../../../app/_layout';
 import GroupAdminBottomNav from '../../components/GroupAdminBottomNav';
 import { Ionicons } from '@expo/vector-icons';
 
-const BASE_URL = 'http://192.168.0.101:8080/api';
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+const BASE_URL = 'http://172.20.10.2:8080/api';
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 interface Member {
   id: string;
@@ -40,27 +40,18 @@ interface Group {
   status?: string;
 }
 
-interface Loan {
-  id: string;
-  member: Member;
-  amount: number;
-  status: string;
-}
-
 interface Contribution {
   id: string;
   amount: number;
   transactionDate: string;
+  paymentDate?: string;
+  dueDate?: string;
+  status: string;
+  isLate?: boolean;
+  penaltyApplied?: number;
+  totalDue?: number;
   member: Member;
   group: Group;
-}
-
-interface StatCard {
-  title: string;
-  value: string | number;
-  icon: string;
-  color: string;
-  route?: string;
 }
 
 export default function GroupDashboardScreen() {
@@ -75,12 +66,14 @@ export default function GroupDashboardScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [totalMembers, setTotalMembers] = useState(0);
   const [totalContributions, setTotalContributions] = useState(0);
+  const [pendingContributionsTotal, setPendingContributionsTotal] = useState(0);
+  const [overdueCount, setOverdueCount] = useState(0);
   const [inactiveMembersCount, setInactiveMembersCount] = useState(0);
-  const [investmentsCount, setInvestmentsCount] = useState(0);
-  const [recentContributions, setRecentContributions] = useState<Contribution[]>([]);
   const [activeGroupsCount, setActiveGroupsCount] = useState(0);
+  const [investmentsCount, setInvestmentsCount] = useState(0);
+  const [recentCompletedContributions, setRecentCompletedContributions] = useState<Contribution[]>([]);
+  const [pendingContributionsList, setPendingContributionsList] = useState<Contribution[]>([]);
 
-  // Dynamic sizing calculations for both summary cards and quick actions
   const CARD_MARGIN = SCREEN_WIDTH * 0.02;
   const STAT_CARD_WIDTH = (SCREEN_WIDTH - (CARD_MARGIN * 8)) / 3;
   const QUICK_ACTION_WIDTH = (SCREEN_WIDTH - (CARD_MARGIN * 8)) / 3;
@@ -91,7 +84,6 @@ export default function GroupDashboardScreen() {
 
   const handleSwitchToMemberView = async () => {
     try {
-      // Store a flag to indicate the user switched to member view
       await AsyncStorage.setItem('userViewMode', 'member');
       router.replace('/(member)/dashboard');
     } catch (error) {
@@ -119,6 +111,12 @@ export default function GroupDashboardScreen() {
       Alert.alert('Logout Failed', 'Could not log out. Please try again.');
     }
   };
+
+  useFocusEffect(
+    React.useCallback(() => {
+      fetchGroupDataAndContributions();
+    }, [])
+  );
 
   const fetchGroupDataAndContributions = async () => {
     try {
@@ -155,48 +153,79 @@ export default function GroupDashboardScreen() {
       setInactiveMembersCount(inactiveCount);
       setActiveGroupsCount(activeGroups);
 
-      let total = 0;
-      const recentContribs: Contribution[] = [];
+      let totalCompletedContributions = 0;
+      let totalPendingAmount = 0;
+      let overdueContributions = 0;
+      const completedContributions: Contribution[] = [];
+      const pendingList: Contribution[] = [];
 
       for (const group of data) {
         try {
           const res = await fetch(`${BASE_URL}/contributions/group/${group.id}`);
           if (res.ok) {
-            const contributions = await res.json();
-            const groupTotal = contributions.reduce(
-              (sum: number, c: { amount: number }) => sum + c.amount,
-              0
-            );
-            total += groupTotal;
-
-            // Get recent contributions (last 5)
-            const sortedContributions = contributions
-              .sort((a: Contribution, b: Contribution) => 
-                new Date(b.transactionDate).getTime() - new Date(a.transactionDate).getTime()
-              )
-              .slice(0, 3);
+            const contributions: Contribution[] = await res.json();
             
-            recentContribs.push(...sortedContributions);
+            const completed = contributions.filter(c => c.status === 'Completed');
+            const pending = contributions.filter(c => c.status === 'Pending');
+            
+            const groupCompletedTotal = completed.reduce((sum, c) => sum + c.amount, 0);
+            totalCompletedContributions += groupCompletedTotal;
+            
+            const groupPendingTotal = pending.reduce((sum, c) => sum + (c.amount + (c.penaltyApplied || 0)), 0);
+            totalPendingAmount += groupPendingTotal;
+            
+            const today = new Date();
+            const overdue = pending.filter(c => {
+              if (c.dueDate) {
+                return new Date(c.dueDate) < today;
+              }
+              return false;
+            });
+            overdueContributions += overdue.length;
+            
+            completed.forEach(c => {
+              completedContributions.push({
+                ...c,
+                group: group,
+                member: c.member
+              });
+            });
+            
+            pending.forEach(c => {
+              pendingList.push({
+                ...c,
+                group: group,
+                member: c.member,
+                totalDue: c.amount + (c.penaltyApplied || 0)
+              });
+            });
           }
         } catch (err) {
           console.error(`Error fetching contributions for group ${group.id}:`, err);
         }
       }
 
-      setTotalContributions(total);
-      setRecentContributions(recentContribs.slice(0, 5));
+      setTotalContributions(totalCompletedContributions);
+      setPendingContributionsTotal(totalPendingAmount);
+      setOverdueCount(overdueContributions);
+      
+      const sortedCompleted = completedContributions
+        .sort((a, b) => new Date(b.transactionDate).getTime() - new Date(a.transactionDate).getTime())
+        .slice(0, 5);
+      setRecentCompletedContributions(sortedCompleted);
+      
+      setPendingContributionsList(pendingList.slice(0, 5));
 
-      // Fetch investments count
-      try {
-        const investmentsRes = await fetch(`${BASE_URL}/investments/group/${data[0]?.id}`); // Get first group's investments
-        if (investmentsRes.ok) {
-          const investments = await investmentsRes.json();
-          setInvestmentsCount(investments.length);
-        } else {
-          console.warn('Failed to fetch investments');
+      if (data.length > 0) {
+        try {
+          const investmentsRes = await fetch(`${BASE_URL}/investments/group/${data[0]?.id}`);
+          if (investmentsRes.ok) {
+            const investments = await investmentsRes.json();
+            setInvestmentsCount(investments.length);
+          }
+        } catch (investmentsErr) {
+          console.error('Error fetching investments:', investmentsErr);
         }
-      } catch (investmentsErr) {
-        console.error('Error fetching investments:', investmentsErr);
       }
 
       setLoading(false);
@@ -207,38 +236,29 @@ export default function GroupDashboardScreen() {
     }
   };
 
-  useEffect(() => {
-    fetchGroupDataAndContributions();
-  }, []);
-
-  const statCards: StatCard[] = [
+  // 8 STAT CARDS (Original 6 + 2 new ones)
+  const statCards = [
+    // Original cards
     {
-      title: 'Total Groups Created',
+      title: 'Total Groups',
       value: groups.length,
       icon: '🏢',
       color: '#2196F3',
       route: '/(groupadmin)/manage-groups'
     },
     {
-      title: 'Total Group Members',
+      title: 'Active Groups',
+      value: activeGroupsCount,
+      icon: '✅',
+      color: '#4CAF50',
+      route: '/(groupadmin)/manage-groups'
+    },
+    {
+      title: 'Total Members',
       value: totalMembers,
       icon: '👥',
       color: '#FF9800',
       route: '/(groupadmin)/group-members'
-    },
-    {
-      title: 'Total Contributions',
-      value: `KES ${totalContributions.toLocaleString()}`,
-      icon: '💰',
-      color: '#4CAF50',
-      route: '/(groupadmin)/group-contributions'
-    },
-    {
-      title: 'Active Groups',
-      value: activeGroupsCount,
-      icon: '✅',
-      color: '#9C27B0',
-      route: '/(groupadmin)/manage-groups'
     },
     {
       title: 'Inactive Members',
@@ -248,10 +268,32 @@ export default function GroupDashboardScreen() {
       route: '/(groupadmin)/group-members'
     },
     {
-      title: 'Total Investments',
+      title: 'Total Collected',
+      value: `KES ${totalContributions.toLocaleString()}`,
+      icon: '💰',
+      color: '#4CAF50',
+      route: '/(groupadmin)/group-contributions'
+    },
+    {
+      title: 'Pending',
+      value: `KES ${pendingContributionsTotal.toLocaleString()}`,
+      icon: '⏳',
+      color: '#FFC107',
+      route: '/(groupadmin)/record-contributions'
+    },
+    // New cards
+    {
+      title: 'Overdue',
+      value: overdueCount,
+      icon: '⚠️',
+      color: '#F44336',
+      route: '/(groupadmin)/record-contributions'
+    },
+    {
+      title: 'Investments',
       value: investmentsCount,
       icon: '💹',
-      color: '#F44336',
+      color: '#9C27B0',
       route: '/(groupadmin)/investments'
     },
   ];
@@ -260,14 +302,25 @@ export default function GroupDashboardScreen() {
     { name: 'Record Contribution', icon: '💰', route: '/(groupadmin)/record-contributions', color: '#4CAF50' },
     { name: 'Manage Groups', icon: '🏢', route: '/(groupadmin)/manage-groups', color: '#2196F3' },
     { name: 'View Members', icon: '👥', route: '/(groupadmin)/group-members', color: '#FF9800' },
-    { name: 'Contribution Report', icon: '🥧', route: '/(superadmin)/contribution-report', color: '#4CAF50' },
+    { name: 'Contribution Report', icon: '🥧', route: '/(groupadmin)/group-contributions', color: '#4CAF50' },
+    { name: 'Contribution Settings', icon: '⚙️', route: '/(groupadmin)/group-settings', color: '#9C27B0' },
     { name: 'Send Notification', icon: '🔔', route: '/(groupadmin)/notifications', color: '#9C27B0' },
     { name: 'Loan Management', icon: '📝', route: '/(groupadmin)/loan-management', color: '#F44336' },
     { name: 'Churn Analysis', icon: '📊', route: '/(groupadmin)/churn-analysis', color: '#9C27B0' },
+    { name: 'Dividends', icon: '🎁', route: '/(groupadmin)/admin-dividends', color: '#c079cd' },
     { name: 'Documents', icon: '📄', route: '/(groupadmin)/document-management', color: '#607D8B' },
     { name: 'Meeting Management', icon: '📅', route: '/(groupadmin)/meetings', color: '#9C27B0' },
     { name: 'Volunteer Campaign', icon: '🤝', route: '/(groupadmin)/create-campaign', color: '#FF9800' },
+    // { name: 'M-PESA Config', icon: '🏦', route: '/(groupadmin)/mpesa-settings', color: '#8c464c' },
   ];
+
+  const formatDate = (dateString: string) => {
+    if (!dateString) return 'N/A';
+    return new Date(dateString).toLocaleDateString('en-US', { 
+      month: 'short', 
+      day: 'numeric' 
+    });
+  };
 
   if (loading) {
     return (
@@ -284,7 +337,6 @@ export default function GroupDashboardScreen() {
 
   return (
     <SafeAreaView style={[styles.safeArea, isDarkMode && styles.darkSafeArea]}>
-      {/* Enhanced Header */}
       <View style={[styles.headerContainer, isDarkMode && styles.darkHeaderContainer]}>
         <View style={styles.logoContainer}>
           <Image
@@ -298,7 +350,6 @@ export default function GroupDashboardScreen() {
         </View>
 
         <View style={styles.headerIconsContainer}>
-          {/* Dark Mode button removed from header */}
           <TouchableOpacity 
             style={styles.headerIconButton}
             onPress={handleSwitchToMemberView}
@@ -344,7 +395,6 @@ export default function GroupDashboardScreen() {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.mainContent}>
-          {/* Welcome Section */}
           <View style={styles.welcomeSection}>
             <Text style={[styles.welcomeText, isDarkMode && styles.darkWelcomeText]}>
               Welcome back, {groupAdminName}!
@@ -362,7 +412,7 @@ export default function GroupDashboardScreen() {
             </Text>
           </View>
 
-          {/* Statistics Grid - 3 columns layout */}
+          {/* 8 Stat Cards Grid - 3 columns, 3 rows (3+3+2) */}
           <View style={styles.statsGrid}>
             {statCards.map((card, index) => (
               <TouchableOpacity
@@ -393,7 +443,6 @@ export default function GroupDashboardScreen() {
             ))}
           </View>
 
-          {/* Quick Actions - Updated to match the image design */}
           <View style={[styles.sectionContainer, isDarkMode && styles.darkSectionContainer]}>
             <View style={styles.sectionHeader}>
               <Text style={[styles.sectionTitle, isDarkMode && styles.darkSectionTitle]}>
@@ -401,7 +450,6 @@ export default function GroupDashboardScreen() {
               </Text>
             </View>
             
-            {/* Divider line like in the image */}
             <View style={[styles.divider, isDarkMode && styles.darkDivider]} />
             
             <View style={styles.quickActionsGrid}>
@@ -428,25 +476,24 @@ export default function GroupDashboardScreen() {
             </View>
           </View>
 
-          {/* Recent Contributions */}
-          {recentContributions.length > 0 && (
+          {recentCompletedContributions.length > 0 && (
             <View style={[styles.sectionContainer, isDarkMode && styles.darkSectionContainer]}>
               <View style={styles.sectionHeader}>
                 <Text style={[styles.sectionTitle, isDarkMode && styles.darkSectionTitle]}>
-                  Recent Contributions
+                  ✅ Recent Completed Contributions
                 </Text>
-                <TouchableOpacity onPress={() => router.push('/(groupadmin)/record-contributions')}>
+                <TouchableOpacity onPress={() => router.push('/(groupadmin)/group-contributions')}>
                   <Text style={styles.link}>View All</Text>
                 </TouchableOpacity>
               </View>
-              {recentContributions.slice(0, 3).map((contribution, index) => (
+              {recentCompletedContributions.map((contribution, index) => (
                 <View key={index} style={styles.contributionItem}>
                   <View style={styles.contributionInfo}>
                     <Text style={[styles.contributionName, isDarkMode && styles.darkContributionName]}>
-                      {contribution.member.firstName} {contribution.member.lastName}
+                      {contribution.member?.firstName} {contribution.member?.lastName}
                     </Text>
                     <Text style={[styles.contributionGroup, isDarkMode && styles.darkContributionGroup]}>
-                      {contribution.group.groupName}
+                      {contribution.group?.groupName}
                     </Text>
                   </View>
                   <View style={styles.contributionMeta}>
@@ -454,7 +501,7 @@ export default function GroupDashboardScreen() {
                       KES {contribution.amount.toLocaleString()}
                     </Text>
                     <Text style={[styles.contributionDate, isDarkMode && styles.darkContributionDate]}>
-                      {new Date(contribution.transactionDate).toLocaleDateString()}
+                      {formatDate(contribution.transactionDate)}
                     </Text>
                   </View>
                 </View>
@@ -462,7 +509,49 @@ export default function GroupDashboardScreen() {
             </View>
           )}
 
-          {/* Groups Overview */}
+          {pendingContributionsList.length > 0 && (
+  <View style={[styles.pendingContainer, isDarkMode && styles.darkPendingContainer]}>
+    <View style={styles.pendingHeader}>
+      <Text style={styles.pendingTitle}>⏳ Pending Contributions</Text>
+      <TouchableOpacity onPress={() => router.push('/(groupadmin)/record-contributions')}>
+        <Text style={styles.pendingLink}>Record Now →</Text>
+      </TouchableOpacity>
+    </View>
+    {pendingContributionsList.map((contribution, index) => {
+      const totalDue = contribution.amount + (contribution.penaltyApplied || 0);
+      const hasPenalty = (contribution.penaltyApplied || 0) > 0;
+      
+      return (
+        <View key={index} style={styles.pendingItem}>
+          <View style={styles.pendingInfo}>
+            <Text style={[styles.pendingName, isDarkMode && styles.darkPendingName]}>
+              {contribution.member?.firstName} {contribution.member?.lastName}
+            </Text>
+            <Text style={[styles.pendingDue, isDarkMode && styles.darkPendingDue]}>
+              Due: {formatDate(contribution.dueDate || contribution.transactionDate)}
+            </Text>
+            {hasPenalty && (
+              <Text style={styles.pendingPenalty}>
+                ⚠️ Penalty: KES {contribution.penaltyApplied?.toLocaleString()}
+              </Text>
+            )}
+          </View>
+          <View style={styles.pendingAmountContainer}>
+            <Text style={styles.pendingAmount}>
+              KES {totalDue.toLocaleString()}
+            </Text>
+            {hasPenalty && (
+              <Text style={styles.pendingOriginalAmount}>
+                (incl. KES {contribution.penaltyApplied?.toLocaleString()} penalty)
+              </Text>
+            )}
+          </View>
+        </View>
+      );
+    })}
+  </View>
+)}
+
           <View style={[styles.sectionContainer, isDarkMode && styles.darkSectionContainer]}>
             <View style={styles.sectionHeader}>
               <Text style={[styles.sectionTitle, isDarkMode && styles.darkSectionTitle]}>
@@ -496,7 +585,6 @@ export default function GroupDashboardScreen() {
             </View>
           </View>
 
-          {/* Footer */}
           <View style={styles.footer}>
             <Text style={[styles.footerText, isDarkMode && styles.darkFooterText]}>
               Powered by: <Text style={styles.footerBrand}>MANSOFT</Text>
@@ -508,7 +596,6 @@ export default function GroupDashboardScreen() {
         </View>
       </ScrollView>
 
-      {/* Floating Dark Mode FAB Button */}
       <TouchableOpacity
         style={[
           styles.floatingDarkModeButton,
@@ -545,7 +632,6 @@ const styles = StyleSheet.create({
     color: '#B0B0B0'
   },
 
-  // Header Styles
   headerContainer: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -614,11 +700,10 @@ const styles = StyleSheet.create({
     color: '#F44336',
   },
 
-  // Floating Dark Mode FAB Button
   floatingDarkModeButton: {
     position: 'absolute',
     right: 20,
-    top: Dimensions.get('window').height / 2 - 28, // Center vertically
+    top: Dimensions.get('window').height / 2 - 28,
     backgroundColor: '#2196F3',
     width: 56,
     height: 56,
@@ -647,7 +732,6 @@ const styles = StyleSheet.create({
     padding: 16 
   },
 
-  // Welcome Section
   welcomeSection: {
     marginBottom: 20,
   },
@@ -678,7 +762,6 @@ const styles = StyleSheet.create({
     color: '#888',
   },
 
-  // Statistics Grid - 3 columns layout
   statsGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -742,7 +825,6 @@ const styles = StyleSheet.create({
     color: '#B0B0B0',
   },
 
-  // Section Styles
   sectionContainer: {
     backgroundColor: '#FFFFFF',
     borderRadius: 12,
@@ -777,7 +859,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 
-  // Divider style
   divider: {
     height: 1,
     backgroundColor: '#E0E0E0',
@@ -787,7 +868,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#333',
   },
 
-  // Quick Actions - Updated styles to match the image
   quickActionsGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -841,7 +921,6 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
   },
 
-  // Contribution Items
   contributionItem: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -889,7 +968,65 @@ const styles = StyleSheet.create({
     color: '#888',
   },
 
-  // Groups List
+  pendingContainer: {
+    backgroundColor: '#FFF8E1',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+    borderLeftWidth: 4,
+    borderLeftColor: '#FFC107',
+  },
+  darkPendingContainer: {
+    backgroundColor: '#2D2D1A',
+  },
+  pendingHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  pendingTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#E65100',
+  },
+  pendingLink: {
+    fontSize: 12,
+    color: '#2196F3',
+    fontWeight: '600',
+  },
+  pendingItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#FFE0B2',
+  },
+  pendingInfo: {
+    flex: 1,
+  },
+  pendingName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333',
+  },
+  darkPendingName: {
+    color: '#FFFFFF',
+  },
+  pendingDue: {
+    fontSize: 11,
+    color: '#E65100',
+  },
+  darkPendingDue: {
+    color: '#FFB74D',
+  },
+  pendingAmount: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#E65100',
+  },
+
   groupsList: {
     gap: 12,
   },
@@ -929,7 +1066,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 
-  // Footer
   footer: { 
     marginTop: 30, 
     alignItems: 'center' 
@@ -953,4 +1089,18 @@ const styles = StyleSheet.create({
   darkFooterSub: {
     color: '#888',
   },
+  pendingPenalty: {
+  fontSize: 10,
+  color: '#F44336',
+  marginTop: 2,
+  fontWeight: '500',
+},
+pendingAmountContainer: {
+  alignItems: 'flex-end',
+},
+pendingOriginalAmount: {
+  fontSize: 9,
+  color: '#FF9800',
+  marginTop: 2,
+},
 });

@@ -17,7 +17,7 @@ import { router } from 'expo-router';
 import MemberBottomNav from '../../components/MemberBottomNav';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const BASE_URL = 'http://192.168.0.101:8080/api';
+const BASE_URL = 'http://172.20.10.2:8080/api';
 
 type DocumentItem = {
   id: string;

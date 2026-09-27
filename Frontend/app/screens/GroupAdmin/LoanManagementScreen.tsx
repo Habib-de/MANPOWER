@@ -18,7 +18,7 @@ import { useRouter } from 'expo-router';
 import { AuthContext } from '../../../app/_layout';
 import GroupAdminBottomNav from '../../components/GroupAdminBottomNav';
 
-const BASE_URL = 'http://192.168.0.101:8080/api';
+const BASE_URL = 'http://172.20.10.2:8080/api';
 const { width: screenWidth } = Dimensions.get('window');
 
 interface Member {
@@ -68,6 +68,7 @@ interface Loan {
   totalPaid: number | null;
   status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'PAID';
   createdOn: string;
+  dueDate: string; 
   reason: string;
   interestRate: number;
   // ML Integration Fields
@@ -88,6 +89,35 @@ interface MLAnalytics {
   mlApprovedLoans: number;
   traditionalLoans: number;
 }
+
+// Add this after your interfaces, before the component starts
+const checkOverdueLoans = (loans: Loan[]): Loan[] => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  
+  const updatedLoans = loans.map(loan => {
+    // Only check APPROVED or ACTIVE loans
+    if (!['APPROVED', 'ACTIVE'].includes(loan.status)) {
+      return loan;
+    }
+
+    const dueDate = new Date(loan.dueDate);
+    dueDate.setHours(0, 0, 0, 0);
+    
+    if (dueDate < today) {
+      console.log(`🔴 Loan ${loan.id} marked as OVERDUE in UI (Group Admin)`);
+      // Return the loan with updated status (local only)
+      return {
+        ...loan,
+        status: 'OVERDUE' as Loan['status']
+      };
+    }
+    
+    return loan;
+  });
+  
+  return updatedLoans;
+};
 
 export default function LoanManagementScreen() {
   const router = useRouter();
@@ -162,8 +192,11 @@ export default function LoanManagementScreen() {
 
       const filteredLoans = allLoansData.filter(loan => allMemberIds.includes(loan.member?.id));
 
+      // ✅ Check for overdue loans
+const overdueCheckedLoans = checkOverdueLoans(filteredLoans);
+
       // Remove pending loans and set all as historical
-      const sortedLoans = filteredLoans.sort((a, b) => new Date(b.createdOn).getTime() - new Date(a.createdOn).getTime());
+      const sortedLoans = overdueCheckedLoans.sort((a, b) => new Date(b.createdOn).getTime() - new Date(a.createdOn).getTime());
       setHistoricalLoans(sortedLoans);
       setAllLoans(sortedLoans);
 
@@ -583,12 +616,15 @@ export default function LoanManagementScreen() {
           <Text style={styles.headerTitle}>Loan Management</Text>
           <Text style={styles.headerSubtitle}>AI-Powered Decision Support</Text>
         </View>
-        <TouchableOpacity 
-          style={styles.analyticsButton}
-          onPress={() => setIsMLAnalyticsModalVisible(true)}
-        >
-          <Text style={styles.analyticsButtonText}>📈 Analytics</Text>
-        </TouchableOpacity>
+        
+
+        
+<TouchableOpacity 
+  style={[styles.analyticsButton, { backgroundColor: '#8B5CF6', marginLeft: 8 }]}
+  onPress={() => router.push('/(groupadmin)/decision-logs')}
+>
+  <Text style={styles.analyticsButtonText}>📋 Logs</Text>
+</TouchableOpacity>
       </View>
 
       <ScrollView 
@@ -598,8 +634,7 @@ export default function LoanManagementScreen() {
         }
       >
         <View style={styles.mainContent}>
-          {/* ML Analytics Card */}
-          {renderMLAnalyticsCard()}
+          
 
           {/* Loan History Section with Filters */}
           <View style={styles.sectionHeader}>
@@ -718,82 +753,6 @@ export default function LoanManagementScreen() {
         </View>
       </Modal>
 
-      {/* ML Analytics Modal */}
-      <Modal
-        animationType="slide"
-        transparent={true}
-        visible={isMLAnalyticsModalVisible}
-        onRequestClose={() => setIsMLAnalyticsModalVisible(false)}
-      >
-        <View style={styles.centeredView}>
-          <View style={[styles.modalView, { width: '95%', maxHeight: '85%' }]}>
-            <Text style={styles.modalTitle}>🤖 AI Analytics Dashboard</Text>
-            <Text style={styles.modalSubtitle}>Group-Specific ML Performance</Text>
-            
-            {loadingAnalytics ? (
-              <ActivityIndicator size="large" color="#2196F3" style={styles.loader} />
-            ) : mlAnalytics ? (
-              <ScrollView style={styles.analyticsModalContent}>
-                {/* Summary Cards */}
-                <View style={styles.analyticsSummary}>
-                  <View style={styles.summaryCard}>
-                    <Text style={styles.summaryNumber}>{mlAnalytics.totalDecisions || 0}</Text>
-                    <Text style={styles.summaryLabel}>Total AI Decisions</Text>
-                  </View>
-                  <View style={styles.summaryCard}>
-                    <Text style={styles.summaryNumber}>{mlAnalytics.mlApprovedLoans || 0}</Text>
-                    <Text style={styles.summaryLabel}>AI-Approved Loans</Text>
-                  </View>
-                  <View style={styles.summaryCard}>
-                    <Text style={styles.summaryNumber}>{mlAnalytics.traditionalLoans || 0}</Text>
-                    <Text style={styles.summaryLabel}>Traditional Loans</Text>
-                  </View>
-                </View>
-
-                {/* Risk Distribution */}
-                {renderRiskDistribution()}
-
-                {/* Decision Types */}
-                <View style={styles.decisionTypes}>
-                  <Text style={styles.sectionTitle}>Decision Types</Text>
-                  {mlAnalytics.decisionsByType && Object.entries(mlAnalytics.decisionsByType).map(([type, count]) => (
-                    <View key={type} style={styles.decisionTypeItem}>
-                      <Text style={styles.decisionTypeLabel}>{type}</Text>
-                      <Text style={styles.decisionTypeCount}>{count}</Text>
-                    </View>
-                  ))}
-                </View>
-
-                {/* Performance Metrics */}
-                <View style={styles.performanceMetrics}>
-                  <Text style={styles.sectionTitle}>Performance Metrics</Text>
-                  <View style={styles.metricItem}>
-                    <Text style={styles.metricLabel}>AI Utilization Rate</Text>
-                    <Text style={styles.metricValue}>
-                      {mlAnalytics.totalDecisions ? 
-                        `${Math.round((mlAnalytics.mlApprovedLoans / mlAnalytics.totalDecisions) * 100)}%` : '0%'
-                      }
-                    </Text>
-                  </View>
-                  <View style={styles.metricItem}>
-                    <Text style={styles.metricLabel}>Total Group Loans</Text>
-                    <Text style={styles.metricValue}>{mlAnalytics.mlApprovedLoans + mlAnalytics.traditionalLoans}</Text>
-                  </View>
-                </View>
-              </ScrollView>
-            ) : (
-              <Text style={styles.emptyMessage}>No analytics data available</Text>
-            )}
-
-            <TouchableOpacity
-              style={[styles.closeButton, { backgroundColor: '#2196F3', marginTop: 15 }]}
-              onPress={() => setIsMLAnalyticsModalVisible(false)}
-            >
-              <Text style={styles.actionButtonText}>Close Dashboard</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
 
       {/* Existing Modals (Contributions, Loan History, Payment) */}
       <Modal

@@ -21,7 +21,7 @@ import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 import MemberBottomNav from '@/app/components/MemberBottomNav';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const BASE_URL = 'http://192.168.0.101:8080/api';
+const BASE_URL = 'http://172.20.10.2:8080/api';
 
 interface LoggedInMember {
   id: string;

@@ -19,7 +19,7 @@ import * as Sharing from 'expo-sharing';
 import * as Print from 'expo-print';
 import { Platform } from 'react-native';
 
-const BASE_URL = 'http://192.168.0.101:8080/api';
+const BASE_URL = 'http://172.20.10.2:8080/api';
 
 interface User {
   email: string;

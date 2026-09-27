@@ -16,7 +16,7 @@ import java.util.UUID;
 import java.util.Map;
 import java.util.HashMap;
 
-@CrossOrigin(origins = {"http://localhost:8081", "http://192.168.0.101:8081"})
+@CrossOrigin(origins = {"http://localhost:8081", "http://172.20.10.2:8081"})
 @RestController
 @RequestMapping("/api/loans")
 public class LoanController {
@@ -253,6 +253,72 @@ public class LoanController {
             
         } catch (Exception e) {
             return ResponseEntity.internalServerError().body(createErrorResponse("Failed to create ML loan: " + e.getMessage()));
+        }
+    }
+
+        // ============ GUARANTOR ENDPOINTS ============
+
+    @Operation(summary = "Get guarantor capacity for a member")
+    @GetMapping("/guarantor-capacity/{memberId}")
+    public ResponseEntity<?> getGuarantorCapacity(@PathVariable String memberId) {
+        try {
+            BigDecimal availableCapacity = loanService.calculateGuarantorCapacity(memberId);
+            
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", true);
+            response.put("memberId", memberId);
+            response.put("availableCapacity", availableCapacity);
+            response.put("message", "Guarantor capacity calculated successfully");
+            
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError().body(createErrorResponse("Failed to calculate guarantor capacity: " + e.getMessage()));
+        }
+    }
+
+    // ============ NEW GUARANTOR ACCEPTANCE/DECLINE ENDPOINTS ============
+
+    @Operation(summary = "Accept guarantee for a loan")
+    @PostMapping("/{loanId}/accept-guarantee")
+    public ResponseEntity<?> acceptGuarantee(@PathVariable String loanId, @RequestBody Map<String, String> request) {
+        try {
+            String guarantorId = request.get("guarantorId");
+            if (guarantorId == null || guarantorId.trim().isEmpty()) {
+                return ResponseEntity.badRequest().body(createErrorResponse("guarantorId is required"));
+            }
+            
+            Loan updatedLoan = loanService.acceptGuarantee(loanId, guarantorId);
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", true);
+            response.put("message", "Guarantee accepted successfully");
+            response.put("data", updatedLoan);
+            return ResponseEntity.ok(response);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(createErrorResponse(e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError().body(createErrorResponse("Failed to accept guarantee: " + e.getMessage()));
+        }
+    }
+
+    @Operation(summary = "Decline guarantee for a loan")
+    @PostMapping("/{loanId}/decline-guarantee")
+    public ResponseEntity<?> declineGuarantee(@PathVariable String loanId, @RequestBody Map<String, String> request) {
+        try {
+            String guarantorId = request.get("guarantorId");
+            if (guarantorId == null || guarantorId.trim().isEmpty()) {
+                return ResponseEntity.badRequest().body(createErrorResponse("guarantorId is required"));
+            }
+            
+            Loan updatedLoan = loanService.declineGuarantee(loanId, guarantorId);
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", true);
+            response.put("message", "Guarantee declined");
+            response.put("data", updatedLoan);
+            return ResponseEntity.ok(response);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(createErrorResponse(e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError().body(createErrorResponse("Failed to decline guarantee: " + e.getMessage()));
         }
     }
 

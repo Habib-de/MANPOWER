@@ -15,7 +15,7 @@ import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import SuperAdminBottomNav from '../../components/SuperAdminBottomNav';
 
-const BASE_URL = 'http://192.168.0.101:8080/api';
+const BASE_URL = 'http://172.20.10.2:8080/api';
 
 export default function RecordContributionScreen(): React.JSX.Element {
   const router = useRouter();

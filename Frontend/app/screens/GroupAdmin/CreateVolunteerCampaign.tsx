@@ -17,7 +17,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Picker } from '@react-native-picker/picker';
 import { Ionicons } from '@expo/vector-icons';
 
-const BASE_URL = 'http://192.168.0.101:8080/api';
+const BASE_URL = 'http://172.20.10.2:8080/api';
 
 // Helper function for alerts
 const showAlert = (title: string, message: string, onOk?: () => void) => {
@@ -791,6 +791,24 @@ export default function VolunteerCampaignsScreen() {
                     </View>
                   </View>
 
+                  {/* 👇 ADD THE BUTTON HERE - RIGHT AFTER progressContainer AND BEFORE campaignFooter */}
+
+{campaign.status === 'ACTIVE' && !campaign.isExpired && (
+  <TouchableOpacity
+    style={styles.recordPaymentButton}
+    onPress={() => router.push({
+      pathname: '/(groupadmin)/record-volunteer-payment',
+      params: { 
+        campaignId: campaign.id, 
+        campaignName: campaign.campaignName 
+      }
+    })}
+  >
+    <Ionicons name="cash-outline" size={18} color="#fff" />
+    <Text style={styles.recordPaymentButtonText}>Record Cash Payment</Text>
+  </TouchableOpacity>
+)}
+
                   <View style={styles.campaignFooter}>
                     <View style={styles.footerItem}>
                       <Ionicons name="people-outline" size={14} color="#4CAF50" />
@@ -1353,4 +1371,22 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     marginLeft: 8,
   },
+
+  recordPaymentButton: {
+  backgroundColor: '#4CAF50',
+  flexDirection: 'row',
+  alignItems: 'center',
+  justifyContent: 'center',
+  paddingVertical: 10,
+  paddingHorizontal: 16,
+  borderRadius: 8,
+  marginTop: 10,
+  marginBottom: 8,
+},
+recordPaymentButtonText: {
+  color: '#fff',
+  fontWeight: '600',
+  fontSize: 14,
+  marginLeft: 8,
+},
 });

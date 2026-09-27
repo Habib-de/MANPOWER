@@ -17,7 +17,7 @@ import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import GroupAdminBottomNav from '../../components/GroupAdminBottomNav';
 
-const API_BASE_URL = 'http://192.168.0.101:8080/api';
+const API_BASE_URL = 'http://172.20.10.2:8080/api';
 
 function GroupMembersScreen() {
   const router = useRouter();
@@ -132,7 +132,7 @@ function GroupMembersScreen() {
       <Text style={styles.memberDetail}>🟢 Status: {item.status}</Text>
       <Text style={styles.memberDetail}>🧑 Role: {item.role}</Text>
 
-      {item.contributions?.length ? (
+      {/* {item.contributions?.length ? (
         item.contributions.map((c: any, idx: number) => {
           const dateText = c.transactionDate
             ? new Date(c.transactionDate).toDateString()
@@ -145,7 +145,7 @@ function GroupMembersScreen() {
         })
       ) : (
         <Text style={styles.memberDetail}>💰 No contributions yet</Text>
-      )}
+      )} */}
 
       <View style={styles.actionRow}>
         <TouchableOpacity style={styles.button} onPress={() => handleCall(item.phoneNumber)}>

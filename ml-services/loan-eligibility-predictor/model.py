@@ -1,137 +1,226 @@
-# loan-eligibility-predictor/model.py - FIXED VERSION WITH CONSERVATIVE MULTIPLIERS
+# loan-eligibility-predictor/model.py - CORRECTED VERSION
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import r2_score, mean_absolute_error
 import joblib
 import os
 from datetime import datetime
+from typing import Tuple, List, Dict, Optional
+
 
 class LoanEligibilityPredictor:
-    def __init__(self):
+    def __init__(self, 
+                 data_dir: str = '../data',
+                 model_dir: str = 'models',
+                 reference_date: Optional[datetime] = None,
+                 min_eligibility: float = 5000,
+                 max_eligibility: float = 150000,
+                 new_member_cap: float = 30000,
+                 min_membership_months: float = 6):
+        """
+        Initialize predictor with configurable parameters.
+        
+        Args:
+            data_dir: Path to data files (relative to script location)
+            model_dir: Path to save/load model files
+            reference_date: Fixed date for calculations (default: now)
+            min_eligibility: Minimum loan amount
+            max_eligibility: Maximum loan amount
+            new_member_cap: Cap for members under min_membership_months
+            min_membership_months: Months threshold for "new member" status
+        """
         self.model = RandomForestRegressor(
             n_estimators=150,
-            random_state=42, 
+            random_state=42,
             max_depth=12,
             min_samples_split=10,
             min_samples_leaf=4,
             max_features=0.7,
-            bootstrap=True
+            bootstrap=True,
+            n_jobs=-1  # Use all CPU cores
         )
-        self.scaler = StandardScaler()
         self.is_trained = False
+        self.data_dir = data_dir
+        self.model_dir = model_dir
+        self.reference_date = reference_date or datetime.now()
+        self.min_eligibility = min_eligibility
+        self.max_eligibility = max_eligibility
+        self.new_member_cap = new_member_cap
+        self.min_membership_months = min_membership_months
+        
+        # Feature names defined once, used everywhere
         self.feature_names = [
-            'membership_months', 'is_active', 'contribution_count', 
+            'membership_months', 'is_active', 'contribution_count',
             'avg_contribution', 'total_contributed', 'completion_rate',
             'loan_count', 'avg_loan_amount', 'repayment_rate', 'avg_outstanding'
         ]
         
-    def load_data(self):
-        """Load data from CSV files - UPDATED PATHS"""
+        # Business rule multipliers (configurable)
+        self.savings_multipliers = {
+            36: 2.0,   # 3+ years
+            24: 1.5,   # 2-3 years
+            12: 1.2,   # 1-2 years
+            6: 0.8,    # 6-12 months
+            0: 0.5     # 0-6 months
+        }
+        
+        self.repayment_adjustments = {
+            (0.8, float('inf')): 1.2,   # Excellent: >80%
+            (0.6, 0.8): 1.1,            # Good: 60-80%
+            (0.5, 0.6): 1.0,            # Average: 50-60% (no change)
+            (0.3, 0.5): 0.8,            # Below average: 30-50%
+            (0.0, 0.3): 0.7             # Poor: <30%
+        }
+
+    def load_data(self) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        """Load data from CSV files with consistent path handling."""
         print("📊 Loading data for loan eligibility prediction...")
         
+        # Resolve path relative to script location
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        data_path = os.path.join(script_dir, self.data_dir)
+        
+        members_file = os.path.join(data_path, 'members_ml_training.csv')
+        contributions_file = os.path.join(data_path, 'contributions_ml_training.csv')
+        loans_file = os.path.join(data_path, 'loans_ml_training.csv')
+        
         try:
-            # Updated paths - files are in data/ folder
-            members = pd.read_csv('../data/members_ml_training.csv')
-            contributions = pd.read_csv('../data/contributions_ml_training.csv')
-            loans = pd.read_csv('../data/loans_ml_training.csv')
+            members = pd.read_csv(members_file)
+            contributions = pd.read_csv(contributions_file)
+            loans = pd.read_csv(loans_file)
             
             print(f"✅ Loaded: {len(members):,} members, {len(contributions):,} contributions, {len(loans):,} loans")
             return members, contributions, loans
             
         except FileNotFoundError as e:
-            print(f"❌ Error loading data: {e}")
-            print("💡 Make sure CSV files are in the 'data/' folder")
-            # Let's check what files actually exist
-            print("📁 Checking current directory structure...")
-            if os.path.exists('data'):
-                print("📂 Data folder exists. Files in data folder:")
-                try:
-                    files = os.listdir('data')
-                    for file in files:
-                        print(f"   - {file}")
-                except:
-                    print("   Could not list data folder contents")
-            else:
-                print("❌ Data folder does not exist")
+            self._diagnose_path_issues(data_path, e)
             raise
-    
-    def prepare_features(self, members, contributions, loans):
-        """Prepare features using ONLY available database columns"""
+
+    def _diagnose_path_issues(self, data_path: str, original_error: Exception):
+        """Helper to diagnose file path problems."""
+        print(f"❌ Error loading data: {original_error}")
+        print(f"💡 Looking in: {os.path.abspath(data_path)}")
+        
+        if os.path.exists(data_path):
+            print(f"📂 Data folder exists. Files found:")
+            for file in os.listdir(data_path):
+                print(f"   - {file}")
+        else:
+            print(f"❌ Data folder does not exist: {data_path}")
+            # Check parent directories
+            parent = os.path.dirname(data_path)
+            if os.path.exists(parent):
+                print(f"📂 Parent directory exists. Contents:")
+                for item in os.listdir(parent):
+                    print(f"   - {item}")
+
+    def prepare_features(self, members: pd.DataFrame, 
+                        contributions: pd.DataFrame, 
+                        loans: pd.DataFrame) -> Tuple[np.ndarray, List]:
+        """
+        Prepare features using ONLY available database columns.
+        
+        Returns:
+            Tuple of (feature_matrix, member_ids)
+        """
         print("🔄 Preparing features from database schema...")
         
-        # Feature 1: Member tenure (from joinDate)
         members = members.copy()
         members['joinDate'] = pd.to_datetime(members['joinDate'])
-        current_date = pd.Timestamp.now()
-        members['membership_days'] = (current_date - members['joinDate']).dt.days
-        members['membership_months'] = members['membership_days'] / 30
+        ref_date = pd.Timestamp(self.reference_date)
+        members['membership_days'] = (ref_date - members['joinDate']).dt.days
+        members['membership_months'] = members['membership_days'] / 30.44  # More accurate avg
         
-        # Feature 2: Member status encoded
+        # Member status
         members['is_active'] = (members['status'] == 'Active').astype(int)
         
-        # Feature 3: Contribution patterns
+        # Contribution patterns
         contribution_features = contributions.groupby('member_id').agg({
             'amount': ['count', 'mean', 'sum'],
-            'status': lambda x: (x == 'Completed').mean()  # completion rate
+            'status': lambda x: (x == 'Completed').mean()
         }).round(2)
         
-        contribution_features.columns = ['contribution_count', 'avg_contribution', 'total_contributed', 'completion_rate']
+        contribution_features.columns = ['contribution_count', 'avg_contribution', 
+                                        'total_contributed', 'completion_rate']
         contribution_features = contribution_features.reset_index()
         
-        # Feature 4: Loan history
+        # Loan history
         loan_features = loans.groupby('member_id').agg({
             'amount': ['count', 'mean'],
-            'status': lambda x: (x == 'Repaid').mean(),  # repayment rate
+            'status': lambda x: (x == 'Repaid').mean(),
             'outstandingBalance': 'mean'
         }).round(2)
         
-        loan_features.columns = ['loan_count', 'avg_loan_amount', 'repayment_rate', 'avg_outstanding']
+        loan_features.columns = ['loan_count', 'avg_loan_amount', 
+                                'repayment_rate', 'avg_outstanding']
         loan_features = loan_features.reset_index()
         
         # Merge all features
         features_df = members[['id', 'membership_months', 'is_active']].copy()
-        features_df = features_df.merge(contribution_features, left_on='id', right_on='member_id', how='left')
-        features_df = features_df.merge(loan_features, left_on='id', right_on='member_id', how='left')
+        features_df = features_df.merge(contribution_features, left_on='id', 
+                                       right_on='member_id', how='left')
+        features_df = features_df.merge(loan_features, left_on='id', 
+                                       right_on='member_id', how='left')
         
-        # Fill NaN values for members with no contributions/loans
-        feature_columns = [
-            'membership_months', 'is_active', 
-            'contribution_count', 'avg_contribution', 'total_contributed', 'completion_rate',
-            'loan_count', 'avg_loan_amount', 'repayment_rate', 'avg_outstanding'
-        ]
+        # Fill NaN values with sensible defaults
+        fill_values = {
+            'repayment_rate': 0.5,
+            'completion_rate': 0.5,
+            'contribution_count': 0,
+            'loan_count': 0,
+            'avg_contribution': 0,
+            'total_contributed': 0,
+            'avg_loan_amount': 0,
+            'avg_outstanding': 0
+        }
         
-        for col in feature_columns:
-            if col in ['repayment_rate', 'completion_rate']:
-                features_df[col] = features_df[col].fillna(0.5)  # Neutral for no history
-            elif col in ['contribution_count', 'loan_count']:
-                features_df[col] = features_df[col].fillna(0)
-            else:
-                features_df[col] = features_df[col].fillna(0)
+        for col, default_val in fill_values.items():
+            if col in features_df.columns:
+                features_df[col] = features_df[col].fillna(default_val)
         
-        # Prepare final feature matrix
-        features = features_df[feature_columns].values
+        # Ensure all expected columns exist
+        for col in self.feature_names:
+            if col not in features_df.columns:
+                features_df[col] = 0
+        
+        features = features_df[self.feature_names].values
         member_ids = features_df['id'].tolist()
         
         print(f"✅ Feature matrix shape: {features.shape}")
         return features, member_ids
-    
-    def calculate_eligibility_labels(self, members, contributions, loans):
-        """Calculate REAL eligibility based on SACCO lending rules"""
+
+    def _get_savings_multiplier(self, months: float) -> float:
+        """Get savings multiplier based on membership duration."""
+        for threshold, multiplier in sorted(self.savings_multipliers.items(), reverse=True):
+            if months >= threshold:
+                return multiplier
+        return 0.5
+
+    def _get_repayment_adjustment(self, rate: float) -> float:
+        """Get repayment rate adjustment factor."""
+        for (low, high), adjustment in self.repayment_adjustments.items():
+            if low <= rate < high:
+                return adjustment
+        return 1.0
+
+    def calculate_eligibility_labels(self, members: pd.DataFrame,
+                                    contributions: pd.DataFrame,
+                                    loans: pd.DataFrame) -> np.ndarray:
+        """Calculate REAL eligibility based on SACCO lending rules."""
         print("🎯 Calculating REAL SACCO eligibility labels...")
         
         labels = []
+        ref_date = pd.Timestamp(self.reference_date)
         
         for _, member in members.iterrows():
             member_id = member['id']
             join_date = pd.to_datetime(member['joinDate'])
-            current_date = pd.Timestamp.now()
-            months_member = (current_date - join_date).days / 30
+            months_member = (ref_date - join_date).days / 30.44
             status = member['status']
             
-            # 1. Get total savings (completed contributions)
+            # Get total savings (completed contributions)
             member_contribs = contributions[
                 (contributions['member_id'] == member_id) &
                 (contributions['transactionType'] == 'Contribution') &
@@ -139,92 +228,67 @@ class LoanEligibilityPredictor:
             ]
             total_savings = member_contribs['amount'].sum()
             
-            # 2. Get loan repayment history
+            # Get loan repayment history
             member_loans = loans[loans['member_id'] == member_id]
+            
             if len(member_loans) > 0:
                 repaid_loans = member_loans[member_loans['status'] == 'Repaid']
                 repayment_rate = len(repaid_loans) / len(member_loans)
                 
                 # Proven capacity from largest repaid loan
-                if len(repaid_loans) > 0:
-                    max_repaid = repaid_loans['amount'].max()
-                    proven_capacity = max_repaid * 1.2  # 20% increase for good history
-                else:
-                    proven_capacity = 0
+                proven_capacity = repaid_loans['amount'].max() * 1.2 if len(repaid_loans) > 0 else 0
             else:
-                repayment_rate = 0.5  # Neutral for no history
+                repayment_rate = 0.5
                 proven_capacity = 0
             
-            # 3. REAL SACCO ELIGIBILITY RULES (CONSERVATIVE)
+            # Calculate eligibility
             if status != 'Active':
-                eligibility = 0  # Inactive members not eligible
+                eligibility = 0
             else:
-                # Rule A: Savings-based eligibility (0.5x to 2.0x savings) - CONSERVATIVE!
-                if months_member >= 36:  # 3+ years
-                    savings_multiplier = 2.0
-                elif months_member >= 24:  # 2-3 years
-                    savings_multiplier = 1.5
-                elif months_member >= 12:  # 1-2 years
-                    savings_multiplier = 1.2
-                elif months_member >= 6:   # 6-12 months
-                    savings_multiplier = 0.8
-                else:                      # 0-6 months
-                    savings_multiplier = 0.5
-                
+                # Savings-based eligibility
+                savings_multiplier = self._get_savings_multiplier(months_member)
                 savings_based = total_savings * savings_multiplier
                 
-                # Rule B: Take maximum of savings-based or proven capacity
+                # Take maximum of savings-based or proven capacity
                 eligibility = max(savings_based, proven_capacity)
                 
-                # Rule C: Apply repayment history adjustment
-                # Good repayment → increase, poor repayment → decrease
-                if repayment_rate > 0.8:
-                    eligibility *= 1.2  # +20% for excellent repayment
-                elif repayment_rate > 0.6:
-                    eligibility *= 1.1  # +10% for good repayment
-                elif repayment_rate < 0.3:
-                    eligibility *= 0.7  # -30% for poor repayment
-                elif repayment_rate < 0.5:
-                    eligibility *= 0.8  # -20% for below average
+                # Apply repayment history adjustment
+                eligibility *= self._get_repayment_adjustment(repayment_rate)
             
-            # 4. REAL SACCO LIMITS (5,000 - 150,000 KES) - MORE REALISTIC!
-            # New members (less than 6 months) max 30,000
-            if months_member < 6:
-                eligibility = min(eligibility, 30000)
+            # Apply caps
+            if months_member < self.min_membership_months:
+                eligibility = min(eligibility, self.new_member_cap)
             
-            # Apply absolute limits (MAX 150,000 not 200,000)
-            eligibility = max(5000, min(150000, eligibility))
-            
-            # Round to nearest 1000 for realism
+            eligibility = max(self.min_eligibility, min(self.max_eligibility, eligibility))
             eligibility = round(eligibility / 1000) * 1000
             
             labels.append(eligibility)
         
         labels_array = np.array(labels)
+        self._print_eligibility_stats(labels_array)
+        return labels_array
+
+    def _print_eligibility_stats(self, labels: np.ndarray):
+        """Print distribution statistics for eligibility labels."""
+        print(f"\n💰 Eligibility Statistics:")
+        print(f"   Minimum: KES {labels.min():,.0f}")
+        print(f"   Maximum: KES {labels.max():,.0f}")
+        print(f"   Average: KES {labels.mean():,.0f}")
+        print(f"   Median:  KES {np.median(labels):,.0f}")
         
-        print(f"\n💰 REAL Eligibility Statistics:")
-        print(f"   Minimum: KES {labels_array.min():,.0f}")
-        print(f"   Maximum: KES {labels_array.max():,.0f}")
-        print(f"   Average: KES {labels_array.mean():,.0f}")
-        print(f"   Median:  KES {np.median(labels_array):,.0f}")
-        
-        # Distribution analysis
         print(f"\n📊 Eligibility Distribution:")
-        bins = [0, 20000, 50000, 100000, 150000, np.inf]
+        bins = [0, 20000, 50000, 100000, 150000, float('inf')]
         bin_labels = ['0-20k', '20k-50k', '50k-100k', '100k-150k', '150k+']
         
-        for i in range(len(bins)-1):
-            count = ((labels_array >= bins[i]) & (labels_array < bins[i+1])).sum()
-            percentage = count / len(labels_array) * 100
+        for i in range(len(bins) - 1):
+            count = ((labels >= bins[i]) & (labels < bins[i + 1])).sum()
+            percentage = count / len(labels) * 100
             print(f"   {bin_labels[i]}: {count} members ({percentage:.1f}%)")
-        
-        return labels_array
-    
-    def train(self, save_model=True):
-        """Train the loan eligibility model"""
+
+    def train(self, save_model: bool = True) -> Tuple[float, float]:
+        """Train the loan eligibility model."""
         print("🤖 Training Loan Eligibility Predictor...")
         
-        # Load and prepare data
         members, contributions, loans = self.load_data()
         X, member_ids = self.prepare_features(members, contributions, loans)
         y = self.calculate_eligibility_labels(members, contributions, loans)
@@ -233,18 +297,16 @@ class LoanEligibilityPredictor:
         print(f"📊 Target vector shape: {y.shape}")
         
         # Split data
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
         
-        # Scale features
-        X_train_scaled = self.scaler.fit_transform(X_train)
-        X_test_scaled = self.scaler.transform(X_test)
-        
-        # Train model
-        self.model.fit(X_train_scaled, y_train)
+        # Train model (NO SCALING needed for Random Forest)
+        self.model.fit(X_train, y_train)
         
         # Evaluate
-        y_pred_train = self.model.predict(X_train_scaled)
-        y_pred_test = self.model.predict(X_test_scaled)
+        y_pred_train = self.model.predict(X_train)
+        y_pred_test = self.model.predict(X_test)
         
         train_r2 = r2_score(y_train, y_pred_train)
         test_r2 = r2_score(y_test, y_pred_test)
@@ -263,23 +325,34 @@ class LoanEligibilityPredictor:
             self.save_model()
         
         return train_r2, test_r2
-    
-    def predict(self, member_data, contributions_data, loans_data):
-        """Predict loan eligibility for members"""
+
+    def predict(self, member_data: pd.DataFrame,
+                contributions_data: pd.DataFrame,
+                loans_data: pd.DataFrame) -> List[Dict]:
+        """
+        Predict loan eligibility for members.
+        
+        Raises:
+            RuntimeError: If model is not trained and no saved model exists.
+        """
         if not self.is_trained:
-            self.load_model()
+            try:
+                self.load_model()
+            except FileNotFoundError:
+                raise RuntimeError(
+                    "Model not trained and no saved model found. "
+                    "Call train() first or provide a trained model file."
+                )
         
-        # Prepare features for prediction
-        features, member_ids = self.prepare_features(member_data, contributions_data, loans_data)
-        features_scaled = self.scaler.transform(features)
+        features, member_ids = self.prepare_features(
+            member_data, contributions_data, loans_data
+        )
         
-        # Predict
-        eligibility_amounts = self.model.predict(features_scaled)
+        eligibility_amounts = self.model.predict(features)
+        eligibility_amounts = np.clip(
+            eligibility_amounts, self.min_eligibility, self.max_eligibility
+        )
         
-        # Apply REAL SACCO business rules (not old fake rules)
-        eligibility_amounts = np.clip(eligibility_amounts, 5000, 150000)  # Updated max to 150,000
-        
-        # Create results
         results = []
         for i, member_id in enumerate(member_ids):
             results.append({
@@ -289,31 +362,52 @@ class LoanEligibilityPredictor:
             })
         
         return results
-    
+
     def save_model(self):
-        """Save the trained model"""
-        os.makedirs('models', exist_ok=True)
+        """Save the trained model."""
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        model_path = os.path.join(script_dir, self.model_dir)
+        os.makedirs(model_path, exist_ok=True)
+        
+        model_file = os.path.join(model_path, 'loan_eligibility_model.joblib')
         joblib.dump({
             'model': self.model,
-            'scaler': self.scaler,
-            'feature_names': self.feature_names
-        }, 'models/loan_eligibility_model.joblib')
-        print("💾 Model saved to models/loan_eligibility_model.joblib")
-    
+            'feature_names': self.feature_names,
+            'config': {
+                'min_eligibility': self.min_eligibility,
+                'max_eligibility': self.max_eligibility,
+                'new_member_cap': self.new_member_cap,
+                'min_membership_months': self.min_membership_months
+            }
+        }, model_file)
+        print(f"💾 Model saved to {model_file}")
+
     def load_model(self):
-        """Load a trained model"""
+        """Load a trained model."""
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        model_file = os.path.join(
+            script_dir, self.model_dir, 'loan_eligibility_model.joblib'
+        )
+        
         try:
-            model_data = joblib.load('models/loan_eligibility_model.joblib')
+            model_data = joblib.load(model_file)
             self.model = model_data['model']
-            self.scaler = model_data['scaler']
             self.feature_names = model_data['feature_names']
+            
+            # Restore config if saved
+            if 'config' in model_data:
+                config = model_data['config']
+                self.min_eligibility = config.get('min_eligibility', self.min_eligibility)
+                self.max_eligibility = config.get('max_eligibility', self.max_eligibility)
+            
             self.is_trained = True
-            print("📂 Model loaded successfully!")
+            print(f"📂 Model loaded successfully from {model_file}")
+            
         except FileNotFoundError:
-            print("❌ No saved model found. Please train the model first.")
+            print(f"❌ No saved model found at {model_file}")
             raise
 
+
 if __name__ == "__main__":
-    # Train the model when run directly
     predictor = LoanEligibilityPredictor()
     predictor.train()

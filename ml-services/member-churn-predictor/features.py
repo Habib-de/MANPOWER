@@ -9,7 +9,7 @@ class MemberChurnFeatureEngineer:
         self.feature_names = None
         
     def create_features(self, members_df, contributions_df, loans_df, notifications_df, 
-                       as_of_date=None):
+                       group_settings_df=None, as_of_date=None):
         """
         Create features for member churn prediction
         """
@@ -21,6 +21,13 @@ class MemberChurnFeatureEngineer:
         # Convert dates
         members_df['joinDate'] = pd.to_datetime(members_df['joinDate'])
         contributions_df['transactionDate'] = pd.to_datetime(contributions_df['transactionDate'])
+        
+        # Convert new contribution fields if they exist
+        if 'dueDate' in contributions_df.columns:
+            contributions_df['dueDate'] = pd.to_datetime(contributions_df['dueDate'])
+        if 'paymentDate' in contributions_df.columns:
+            contributions_df['paymentDate'] = pd.to_datetime(contributions_df['paymentDate'])
+            
         loans_df['startDate'] = pd.to_datetime(loans_df['startDate'])
         notifications_df['sendDate'] = pd.to_datetime(notifications_df['sendDate'])
         
@@ -34,9 +41,15 @@ class MemberChurnFeatureEngineer:
             member_loans = loans_df[loans_df['member_id'] == member_id]
             member_notifs = notifications_df[notifications_df['member_id'] == member_id]
             
+            # Get member's group settings (frequency, expected amount)
+            member_group_settings = None
+            if group_settings_df is not None and 'group_id' in member:
+                member_group_settings = group_settings_df[group_settings_df['group_id'] == member.get('group_id')]
+            
             # Calculate features
             features = self._calculate_member_features(
-                member, member_contribs, member_loans, member_notifs, as_of_date
+                member, member_contribs, member_loans, member_notifs, 
+                member_group_settings, as_of_date
             )
             features_list.append(features)
         
@@ -45,7 +58,7 @@ class MemberChurnFeatureEngineer:
         
         return features_df
     
-    def _calculate_member_features(self, member, contribs, loans, notifs, as_of_date):
+    def _calculate_member_features(self, member, contribs, loans, notifs, group_settings, as_of_date):
         """Calculate ALL features for one member"""
         features = {}
         
@@ -59,7 +72,7 @@ class MemberChurnFeatureEngineer:
         role_map = {'Member': 0, 'GroupAdmin': 1, 'SuperAdmin': 2}
         features['role_encoded'] = role_map.get(member['role'], 0)
         
-        # ========== 2. CONTRIBUTION FEATURES ==========
+        # ========== 2. CONTRIBUTION FEATURES (EXISTING) ==========
         # Filter contributions before as_of_date
         past_contribs = contribs[contribs['transactionDate'] <= as_of_date]
         
@@ -96,8 +109,9 @@ class MemberChurnFeatureEngineer:
             features['months_active'] = contrib_months
             features['consistency_score'] = contrib_months / max(1, features['membership_months'])
             
-            # Completion rate
-            features['completion_rate'] = (past_contribs['status'] == 'Completed').mean()
+            # Completion rate (for non-pending contributions)
+            completed = past_contribs[past_contribs['status'] == 'Completed']
+            features['completion_rate'] = len(completed) / len(past_contribs) if len(past_contribs) > 0 else 0.5
             
             # Payment method preference
             total_payments = len(past_contribs)
@@ -125,7 +139,78 @@ class MemberChurnFeatureEngineer:
             features['cash_pct'] = 0
             features['bank_pct'] = 0
         
-        # ========== 3. LOAN FEATURES ==========
+        # ========== NEW: PENDING & OVERDUE CONTRIBUTION FEATURES ==========
+        
+        # Get pending contributions (status = 'Pending')
+        pending_contribs = past_contribs[past_contribs['status'] == 'Pending']
+        features['has_pending_contributions'] = len(pending_contribs) > 0
+        features['pending_contributions_count'] = len(pending_contribs)
+        features['pending_amount_total'] = pending_contribs['amount'].sum()
+        features['pending_amount_avg'] = pending_contribs['amount'].mean() if len(pending_contribs) > 0 else 0
+        
+        # Overdue contributions (due date < today AND still pending)
+        if 'dueDate' in past_contribs.columns:
+            today = as_of_date
+            overdue_contribs = pending_contribs[pending_contribs['dueDate'] < today]
+            features['overdue_contributions_count'] = len(overdue_contribs)
+            features['overdue_amount_total'] = overdue_contribs['amount'].sum()
+            features['has_overdue_contributions'] = len(overdue_contribs) > 0
+            
+            # Days overdue for the most overdue contribution
+            if len(overdue_contribs) > 0:
+                max_overdue_days = (today - overdue_contribs['dueDate'].min()).days
+                features['max_days_overdue'] = max_overdue_days
+            else:
+                features['max_days_overdue'] = 0
+        else:
+            features['overdue_contributions_count'] = 0
+            features['overdue_amount_total'] = 0
+            features['has_overdue_contributions'] = False
+            features['max_days_overdue'] = 0
+        
+        # Penalties applied
+        if 'penaltyApplied' in past_contribs.columns:
+            features['total_penalties_paid'] = past_contribs['penaltyApplied'].sum()
+            features['has_penalties'] = features['total_penalties_paid'] > 0
+            features['avg_penalty'] = past_contribs[past_contribs['penaltyApplied'] > 0]['penaltyApplied'].mean() if features['has_penalties'] else 0
+        else:
+            features['total_penalties_paid'] = 0
+            features['has_penalties'] = False
+            features['avg_penalty'] = 0
+        
+        # ========== NEW: PAYMENT CONSISTENCY (based on schedule) ==========
+        
+        # Calculate how many weeks/months of contributions were missed
+        if len(past_contribs) > 0 and group_settings is not None and len(group_settings) > 0:
+            frequency = group_settings.iloc[0].get('contribution_frequency', 'MONTHLY')
+            expected_amount = group_settings.iloc[0].get('expected_contribution_amount', 0)
+            
+            if frequency == 'WEEKLY':
+                expected_period_days = 7
+                expected_contributions_per_year = 52
+            else:  # MONTHLY
+                expected_period_days = 30.44
+                expected_contributions_per_year = 12
+            
+            # Calculate expected contributions based on membership duration
+            membership_weeks = features['membership_days'] / 7
+            expected_contributions = max(1, int(membership_weeks)) if frequency == 'WEEKLY' else max(1, int(features['membership_months']))
+            
+            # Calculate missed contributions
+            features['expected_contributions'] = expected_contributions
+            features['missed_contributions'] = max(0, expected_contributions - features['total_contributions'])
+            features['missed_contributions_rate'] = features['missed_contributions'] / max(1, expected_contributions)
+            
+            # Calculate if currently behind schedule
+            features['is_behind_schedule'] = features['missed_contributions'] > (expected_contributions * 0.2)
+            
+        else:
+            features['expected_contributions'] = 0
+            features['missed_contributions'] = 0
+            features['missed_contributions_rate'] = 0
+            features['is_behind_schedule'] = False
+        
+        # ========== 3. LOAN FEATURES (EXISTING) ==========
         past_loans = loans[loans['startDate'] <= as_of_date]
         
         if len(past_loans) > 0:
@@ -173,7 +258,7 @@ class MemberChurnFeatureEngineer:
             features['loan_to_savings_ratio'] = 0
             features['has_outstanding_debt'] = 0
         
-        # ========== 4. ENGAGEMENT FEATURES ==========
+        # ========== 4. ENGAGEMENT FEATURES (EXISTING) ==========
         past_notifs = notifs[notifs['sendDate'] <= as_of_date]
         
         if len(past_notifs) > 0:
@@ -235,6 +320,12 @@ class MemberChurnFeatureEngineer:
         features['warning_no_comm_3m'] = 1 if features['days_since_last_communication'] > 90 else 0
         features['warning_high_debt'] = 1 if features['loan_to_savings_ratio'] > 2 else 0
         features['warning_default_history'] = 1 if features['defaulted_loans'] > 0 else 0
+        
+        # ========== NEW: OVERDUE WARNING FLAGS ==========
+        features['warning_has_pending'] = 1 if features['has_pending_contributions'] else 0
+        features['warning_has_overdue'] = 1 if features['has_overdue_contributions'] else 0
+        features['warning_has_penalties'] = 1 if features['has_penalties'] else 0
+        features['warning_behind_schedule'] = 1 if features.get('is_behind_schedule', False) else 0
         
         return features
     

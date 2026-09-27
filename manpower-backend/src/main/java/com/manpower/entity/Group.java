@@ -6,7 +6,9 @@ import org.hibernate.annotations.UpdateTimestamp;
 
 import javax.persistence.*;
 import java.io.Serializable;
+import java.math.BigDecimal;
 import java.sql.Date;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.HashSet;
 import java.util.Set;
@@ -20,6 +22,14 @@ import com.fasterxml.jackson.annotation.JsonManagedReference;
 public class Group implements Serializable {
 
     private static final long serialVersionUID = 1L;
+
+    // ========== ENUMS ==========
+    
+    public enum ContributionFrequency {
+        WEEKLY, MONTHLY
+    }
+
+    // ========== EXISTING FIELDS ==========
 
     @Id
     @GeneratedValue(generator = "uuid2")
@@ -56,7 +66,7 @@ public class Group implements Serializable {
     @Column(name = "status", length = 20)
     private String status = "Active";
 
-    // ========== NEW MPESA FIELDS ==========
+    // ========== MPESA FIELDS ==========
     
     @Column(name = "mpesa_consumer_key", length = 500)
     private String mpesaConsumerKey;
@@ -79,11 +89,47 @@ public class Group implements Serializable {
     @Column(name = "mpesa_last_configured")
     private LocalDateTime mpesaLastConfigured;
 
+    // ========== NEW CONTRIBUTION SETTINGS FIELDS ==========
+    
+    @Enumerated(EnumType.STRING)
+    @Column(name = "contribution_frequency")
+    private ContributionFrequency contributionFrequency;
+    
+    @Column(name = "expected_contribution_amount")
+    private BigDecimal expectedContributionAmount;
+    
+    @Column(name = "enable_penalty")
+    private Boolean enablePenalty = false;
+    
+    @Column(name = "penalty_amount")
+    private BigDecimal penaltyAmount;
+    
+    @Column(name = "grace_period_days")
+    private Integer gracePeriodDays = 3;
+    
+    @Column(name = "enable_reminders")
+    private Boolean enableReminders = true;
+    
+    @Column(name = "reminder_days_before")
+    private Integer reminderDaysBefore = 2;
+    
+    @Column(name = "contribution_due_day")
+    private Integer contributionDueDay; // 1-31 for monthly, 1-7 for weekly (1=Monday)
+    
+    @Column(name = "next_contribution_date")
+    private LocalDate nextContributionDate;
+
+    // ========== RELATIONSHIPS ==========
+
     @OneToMany(mappedBy = "group", cascade = CascadeType.ALL, orphanRemoval = true)
     @JsonManagedReference
     private Set<Member> members = new HashSet<>();
 
-    // ========== Getters & Setters ==========
+    // ========== CONSTRUCTORS ==========
+    
+    public Group() {}
+
+    // ========== EXISTING GETTERS & SETTERS ==========
 
     public String getId() {
         return id;
@@ -165,7 +211,7 @@ public class Group implements Serializable {
         this.status = status;
     }
 
-    // ========== NEW MPESA GETTERS & SETTERS ==========
+    // ========== MPESA GETTERS & SETTERS ==========
     
     public String getMpesaConsumerKey() {
         return mpesaConsumerKey;
@@ -222,6 +268,82 @@ public class Group implements Serializable {
     public void setMpesaLastConfigured(LocalDateTime mpesaLastConfigured) {
         this.mpesaLastConfigured = mpesaLastConfigured;
     }
+
+    // ========== NEW CONTRIBUTION SETTINGS GETTERS & SETTERS ==========
+    
+    public ContributionFrequency getContributionFrequency() {
+        return contributionFrequency;
+    }
+
+    public void setContributionFrequency(ContributionFrequency contributionFrequency) {
+        this.contributionFrequency = contributionFrequency;
+    }
+
+    public BigDecimal getExpectedContributionAmount() {
+        return expectedContributionAmount;
+    }
+
+    public void setExpectedContributionAmount(BigDecimal expectedContributionAmount) {
+        this.expectedContributionAmount = expectedContributionAmount;
+    }
+
+    public Boolean getEnablePenalty() {
+        return enablePenalty;
+    }
+
+    public void setEnablePenalty(Boolean enablePenalty) {
+        this.enablePenalty = enablePenalty;
+    }
+
+    public BigDecimal getPenaltyAmount() {
+        return penaltyAmount;
+    }
+
+    public void setPenaltyAmount(BigDecimal penaltyAmount) {
+        this.penaltyAmount = penaltyAmount;
+    }
+
+    public Integer getGracePeriodDays() {
+        return gracePeriodDays;
+    }
+
+    public void setGracePeriodDays(Integer gracePeriodDays) {
+        this.gracePeriodDays = gracePeriodDays;
+    }
+
+    public Boolean getEnableReminders() {
+        return enableReminders;
+    }
+
+    public void setEnableReminders(Boolean enableReminders) {
+        this.enableReminders = enableReminders;
+    }
+
+    public Integer getReminderDaysBefore() {
+        return reminderDaysBefore;
+    }
+
+    public void setReminderDaysBefore(Integer reminderDaysBefore) {
+        this.reminderDaysBefore = reminderDaysBefore;
+    }
+
+    public Integer getContributionDueDay() {
+        return contributionDueDay;
+    }
+
+    public void setContributionDueDay(Integer contributionDueDay) {
+        this.contributionDueDay = contributionDueDay;
+    }
+
+    public LocalDate getNextContributionDate() {
+        return nextContributionDate;
+    }
+
+    public void setNextContributionDate(LocalDate nextContributionDate) {
+        this.nextContributionDate = nextContributionDate;
+    }
+
+    // ========== RELATIONSHIP GETTERS & SETTERS ==========
 
     public Set<Member> getMembers() {
         return members;

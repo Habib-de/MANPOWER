@@ -13,7 +13,7 @@ import javax.validation.Valid;
 import java.util.List;
 import java.util.Optional;
 
-@CrossOrigin(origins = {"http://localhost:8081", "http://192.168.0.101:8081"}) // ✅ Updated to match frontend
+@CrossOrigin(origins = {"http://localhost:8081", "http://172.20.10.2:8081"}) // ✅ Updated to match frontend
 @RestController
 @RequestMapping("/api/members")
 public class MemberController {

@@ -26,10 +26,17 @@ DB_CONFIG = {
     'host': 'localhost',
     'user': 'root',
     'password': '',
-    'database': 'manpower_db',
+    'database': 'manpower2_db',
     'port': 3306,
     'autocommit': True
 }
+
+# =============================================================================
+# INITIALIZE FLASK APP
+# =============================================================================
+
+app = Flask(__name__)
+CORS(app)
 
 # =============================================================================
 # LOAD YOUR TRAINED CHURN MODEL
@@ -59,7 +66,7 @@ except Exception as e:
 print("="*70)
 
 # =============================================================================
-# DATABASE FETCHER - With EXACT column names from your database
+# DATABASE FETCHER - WITH NEW CONTRIBUTION FEATURES
 # =============================================================================
 
 class DatabaseFetcher:
@@ -78,7 +85,7 @@ class DatabaseFetcher:
             return None
     
     def fetch_member_data_for_churn(self, member_id: str) -> Dict:
-        """Fetch all member data needed for churn prediction with EXACT column names"""
+        """Fetch all member data needed for churn prediction including new contribution features"""
         conn = self.connect()
         if not conn:
             logger.error("❌ Cannot fetch data - no database connection")
@@ -87,7 +94,7 @@ class DatabaseFetcher:
         try:
             cursor = conn.cursor(dictionary=True)
             
-            # STEP 1: Get member basic info - EXACT column names from your DB
+            # STEP 1: Get member basic info
             cursor.execute("""
                 SELECT 
                     id,
@@ -98,6 +105,7 @@ class DatabaseFetcher:
                     role,
                     status,
                     join_date,
+                    group_id,
                     DATEDIFF(NOW(), join_date) as membership_days
                 FROM members 
                 WHERE id = %s
@@ -115,13 +123,36 @@ class DatabaseFetcher:
                 membership_days = 180
             member['membership_months'] = membership_days / 30.44
             
-            # STEP 2: Get contribution history - EXACT column names from your DB
+            # STEP 2: Get contribution history with NEW fields (pending, overdue, penalties)
             cursor.execute("""
                 SELECT 
                     COUNT(*) as total_contributions,
                     SUM(amount) as total_saved,
                     AVG(amount) as avg_contribution,
                     MAX(transaction_date) as last_contrib_date,
+                    
+                    -- New: Pending contributions
+                    SUM(CASE WHEN status = 'Pending' THEN 1 ELSE 0 END) as pending_count,
+                    SUM(CASE WHEN status = 'Pending' THEN amount ELSE 0 END) as pending_amount,
+                    
+                    -- New: Overdue contributions (due_date < NOW() AND status = 'Pending')
+                    SUM(CASE 
+                        WHEN status = 'Pending' AND due_date IS NOT NULL AND due_date < NOW() 
+                        THEN 1 ELSE 0 END) as overdue_count,
+                    SUM(CASE 
+                        WHEN status = 'Pending' AND due_date IS NOT NULL AND due_date < NOW() 
+                        THEN amount ELSE 0 END) as overdue_amount,
+                    
+                    -- New: Maximum days overdue
+                    MAX(CASE 
+                        WHEN status = 'Pending' AND due_date IS NOT NULL AND due_date < NOW() 
+                        THEN DATEDIFF(NOW(), due_date) ELSE 0 END) as max_days_overdue,
+                    
+                    -- New: Penalties
+                    SUM(CASE WHEN penalty_applied IS NOT NULL AND penalty_applied > 0 
+                        THEN penalty_applied ELSE 0 END) as total_penalties,
+                    COUNT(CASE WHEN penalty_applied IS NOT NULL AND penalty_applied > 0 
+                        THEN 1 ELSE NULL END) as penalty_count,
                     
                     -- Last 3 months
                     SUM(CASE 
@@ -163,7 +194,7 @@ class DatabaseFetcher:
                 if contribs[key] is None:
                     contribs[key] = 0
             
-            # Get days since last contribution - FIXED date handling
+            # Get days since last contribution
             last_contrib = contribs.get('last_contrib_date')
             if last_contrib:
                 if isinstance(last_contrib, date) and not isinstance(last_contrib, datetime):
@@ -172,7 +203,49 @@ class DatabaseFetcher:
             else:
                 days_since = membership_days
             
-            # STEP 3: Get loan history - EXACT column names from your DB
+            # Get group settings for expected contributions
+            group_id = member.get('group_id')
+            expected_amount = 0
+            contribution_frequency = 'MONTHLY'
+            
+            if group_id:
+                cursor.execute("""
+                    SELECT expected_contribution_amount, contribution_frequency
+                    FROM group_info
+                    WHERE id = %s
+                """, (group_id,))
+                group_settings = cursor.fetchone()
+                if group_settings:
+                    expected_amount = group_settings.get('expected_contribution_amount', 0) or 0
+                    contribution_frequency = group_settings.get('contribution_frequency', 'MONTHLY') or 'MONTHLY'
+            
+            # Calculate missed contributions based on frequency
+            expected_contributions = 0
+            missed_contributions = 0
+            
+            if contribution_frequency == 'WEEKLY':
+                membership_weeks = membership_days / 7
+                expected_contributions = max(1, int(membership_weeks))
+            else:  # MONTHLY
+                expected_contributions = max(1, int(member['membership_months']))
+            
+            missed_contributions = max(0, expected_contributions - contribs.get('total_contributions', 0))
+            is_behind_schedule = missed_contributions > (expected_contributions * 0.2)
+            
+            # Payment regularity (simplified: consistency of payment timing)
+            payment_regularity = 0.5
+            payment_amount_consistency = 0.5
+            
+            if contribs.get('total_contributions', 0) > 1:
+                # Calculate payment regularity based on completion rate
+                payment_regularity = contribs.get('completion_rate', 0.5)
+                # Calculate amount consistency based on average amount vs max
+                avg_amt = contribs.get('avg_contribution', 0)
+                max_amt = contribs.get('amount_max', 0)
+                if avg_amt > 0 and max_amt > 0:
+                    payment_amount_consistency = min(1, avg_amt / max_amt)
+            
+            # STEP 3: Get loan history
             cursor.execute("""
                 SELECT 
                     COUNT(*) as total_loans,
@@ -206,7 +279,7 @@ class DatabaseFetcher:
                 if loans[key] is None:
                     loans[key] = 0
             
-            # Get days since last loan - FIXED date handling
+            # Get days since last loan
             last_loan = loans.get('last_loan_date')
             if last_loan:
                 if isinstance(last_loan, date) and not isinstance(last_loan, datetime):
@@ -215,7 +288,7 @@ class DatabaseFetcher:
             else:
                 days_since_last_loan = membership_days
             
-            # STEP 4: Get communication history - EXACT column names from your DB
+            # STEP 4: Get communication history
             cursor.execute("""
                 SELECT 
                     COUNT(*) as total_notifications,
@@ -241,7 +314,7 @@ class DatabaseFetcher:
                 if notifs[key] is None:
                     notifs[key] = 0
             
-            # Get days since last communication - FIXED date handling
+            # Get days since last communication
             last_comm = notifs.get('last_communication')
             if last_comm:
                 if isinstance(last_comm, date) and not isinstance(last_comm, datetime):
@@ -264,7 +337,7 @@ class DatabaseFetcher:
             else:
                 activity_trend = 1.0
             
-            # Silent days (min of last contrib and last comm)
+            # Silent days
             silent_days = min(days_since, days_since_last_comm)
             
             # Warning flags
@@ -274,16 +347,28 @@ class DatabaseFetcher:
             warning_high_debt = 1 if loan_to_savings_ratio > 2 else 0
             warning_default_history = 1 if loans.get('defaulted_loans', 0) > 0 else 0
             
+            # NEW warning flags
+            warning_has_pending = 1 if contribs.get('pending_count', 0) > 0 else 0
+            warning_has_overdue = 1 if contribs.get('overdue_count', 0) > 0 else 0
+            warning_has_penalties = 1 if contribs.get('total_penalties', 0) > 0 else 0
+            warning_behind_schedule = 1 if is_behind_schedule else 0
+            warning_irregular_payments = 1 if payment_regularity < 0.3 else 0
+            warning_amount_changed = 1 if payment_amount_consistency < 0.3 else 0
+            
             # Build complete feature dictionary
             features = {
                 'member_id': member_id,
                 'first_name': member.get('first_name', ''),
                 'last_name': member.get('last_name', ''),
+                'email': member.get('email', ''),
+                'phone_number': member.get('phone_number', ''),
+                'status': member.get('status', ''),
+                'group_id': group_id,
                 'membership_days': membership_days,
                 'membership_months': member['membership_months'],
                 'role_encoded': 0 if member['role'] == 'Member' else (1 if member['role'] == 'GroupAdmin' else 2),
                 
-                # Contribution features
+                # Contribution features (existing)
                 'total_contributions': contribs.get('total_contributions', 0),
                 'total_saved': contribs.get('total_saved', 0),
                 'avg_contribution': contribs.get('avg_contribution', 0),
@@ -301,6 +386,25 @@ class DatabaseFetcher:
                 'mpesa_pct': 0,
                 'cash_pct': 0,
                 'bank_pct': 0,
+                
+                # NEW Contribution features
+                'has_pending_contributions': 1 if contribs.get('pending_count', 0) > 0 else 0,
+                'pending_contributions_count': contribs.get('pending_count', 0),
+                'pending_amount_total': contribs.get('pending_amount', 0),
+                'overdue_contributions_count': contribs.get('overdue_count', 0),
+                'overdue_amount_total': contribs.get('overdue_amount', 0),
+                'has_overdue_contributions': 1 if contribs.get('overdue_count', 0) > 0 else 0,
+                'max_days_overdue': contribs.get('max_days_overdue', 0),
+                'total_penalties_paid': contribs.get('total_penalties', 0),
+                'has_penalties': 1 if contribs.get('total_penalties', 0) > 0 else 0,
+                'payment_regularity': payment_regularity,
+                'payment_amount_consistency': payment_amount_consistency,
+                'expected_contributions': expected_contributions,
+                'missed_contributions': missed_contributions,
+                'missed_contributions_rate': missed_contributions / max(1, expected_contributions),
+                'is_behind_schedule': 1 if is_behind_schedule else 0,
+                'is_likely_monthly': 1 if contribution_frequency == 'MONTHLY' else 0,
+                'is_likely_weekly': 1 if contribution_frequency == 'WEEKLY' else 0,
                 
                 # Loan features
                 'total_loans': loans.get('total_loans', 0),
@@ -338,13 +442,21 @@ class DatabaseFetcher:
                 'is_inactive_status': 1 if member['status'] == 'Inactive' else 0,
                 'is_terminated': 1 if member['status'] == 'Terminated' else 0,
                 
-                # Risk indicators
+                # Risk indicators (existing)
                 'silent_days': silent_days,
                 'warning_no_contrib_3m': warning_no_contrib_3m,
                 'warning_no_contrib_6m': warning_no_contrib_6m,
                 'warning_no_comm_3m': warning_no_comm_3m,
                 'warning_high_debt': warning_high_debt,
-                'warning_default_history': warning_default_history
+                'warning_default_history': warning_default_history,
+                
+                # NEW Risk indicators
+                'warning_has_pending': warning_has_pending,
+                'warning_has_overdue': warning_has_overdue,
+                'warning_has_penalties': warning_has_penalties,
+                'warning_behind_schedule': warning_behind_schedule,
+                'warning_irregular_payments': warning_irregular_payments,
+                'warning_amount_changed': warning_amount_changed
             }
             
             return features
@@ -363,6 +475,10 @@ class DatabaseFetcher:
             'member_id': '',
             'first_name': '',
             'last_name': '',
+            'email': '',
+            'phone_number': '',
+            'status': '',
+            'group_id': '',
             'membership_days': 180,
             'membership_months': 6.0,
             'role_encoded': 0,
@@ -383,6 +499,23 @@ class DatabaseFetcher:
             'mpesa_pct': 0,
             'cash_pct': 0,
             'bank_pct': 0,
+            'has_pending_contributions': 0,
+            'pending_contributions_count': 0,
+            'pending_amount_total': 0,
+            'overdue_contributions_count': 0,
+            'overdue_amount_total': 0,
+            'has_overdue_contributions': 0,
+            'max_days_overdue': 0,
+            'total_penalties_paid': 0,
+            'has_penalties': 0,
+            'payment_regularity': 0.5,
+            'payment_amount_consistency': 0.5,
+            'expected_contributions': 26,
+            'missed_contributions': 0,
+            'missed_contributions_rate': 0,
+            'is_behind_schedule': 0,
+            'is_likely_monthly': 1,
+            'is_likely_weekly': 0,
             'total_loans': 0,
             'total_borrowed': 0,
             'avg_loan_amount': 0,
@@ -416,15 +549,156 @@ class DatabaseFetcher:
             'warning_no_contrib_6m': 1,
             'warning_no_comm_3m': 1,
             'warning_high_debt': 0,
-            'warning_default_history': 0
+            'warning_default_history': 0,
+            'warning_has_pending': 0,
+            'warning_has_overdue': 0,
+            'warning_has_penalties': 0,
+            'warning_behind_schedule': 0,
+            'warning_irregular_payments': 0,
+            'warning_amount_changed': 0
         }
+
+
+# =============================================================================
+# MEMBER INFO ENDPOINT (RESTORED)
+# =============================================================================
+
+@app.route('/api/v1/member/<member_id>', methods=['GET'])
+def get_member_info(member_id):
+    """Get detailed member information including contributions and loans"""
+    try:
+        logger.info(f"📋 Fetching member info for: {member_id}")
+        
+        conn = DatabaseFetcher().connect()
+        if not conn:
+            return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor(dictionary=True)
+        
+        # Get member basic info
+        cursor.execute("""
+            SELECT 
+                id,
+                first_name,
+                last_name,
+                email,
+                phone_number,
+                role,
+                status,
+                join_date,
+                group_id
+            FROM members 
+            WHERE id = %s
+        """, (member_id,))
+        
+        member = cursor.fetchone()
+        
+        if not member:
+            return jsonify({'success': False, 'error': 'Member not found'}), 404
+        
+        # Get recent contributions
+        cursor.execute("""
+            SELECT 
+                id,
+                amount,
+                transaction_date,
+                due_date,
+                payment_date,
+                status,
+                payment_method,
+                is_late,
+                days_late,
+                penalty_applied,
+                description
+            FROM contributions 
+            WHERE member_id = %s
+            ORDER BY transaction_date DESC
+            LIMIT 10
+        """, (member_id,))
+        
+        contributions = cursor.fetchall()
+        
+        # Format dates for JSON
+        for contrib in contributions:
+            if contrib.get('transaction_date'):
+                contrib['transaction_date'] = contrib['transaction_date'].isoformat() if hasattr(contrib['transaction_date'], 'isoformat') else str(contrib['transaction_date'])
+            if contrib.get('due_date'):
+                contrib['due_date'] = contrib['due_date'].isoformat() if hasattr(contrib['due_date'], 'isoformat') else str(contrib['due_date'])
+            if contrib.get('payment_date'):
+                contrib['payment_date'] = contrib['payment_date'].isoformat() if hasattr(contrib['payment_date'], 'isoformat') else str(contrib['payment_date'])
+        
+        # Get loans
+        cursor.execute("""
+            SELECT 
+                id,
+                amount,
+                interest_rate,
+                start_date,
+                due_date,
+                status,
+                outstanding_balance,
+                total_paid,
+                reason
+            FROM loans 
+            WHERE member_id = %s
+            ORDER BY start_date DESC
+        """, (member_id,))
+        
+        loans = cursor.fetchall()
+        
+        # Format dates for loans
+        for loan in loans:
+            if loan.get('start_date'):
+                loan['start_date'] = loan['start_date'].isoformat() if hasattr(loan['start_date'], 'isoformat') else str(loan['start_date'])
+            if loan.get('due_date'):
+                loan['due_date'] = loan['due_date'].isoformat() if hasattr(loan['due_date'], 'isoformat') else str(loan['due_date'])
+        
+        # Get summary stats
+        cursor.execute("""
+            SELECT 
+                COUNT(*) as total_contributions,
+                SUM(amount) as total_saved,
+                SUM(CASE WHEN status = 'Pending' THEN 1 ELSE 0 END) as pending_count,
+                SUM(CASE WHEN status = 'Pending' AND due_date < NOW() THEN 1 ELSE 0 END) as overdue_count,
+                SUM(penalty_applied) as total_penalties
+            FROM contributions 
+            WHERE member_id = %s
+        """, (member_id,))
+        
+        summary = cursor.fetchone() or {}
+        
+        cursor.close()
+        conn.close()
+        
+        response = {
+            'success': True,
+            'data': {
+                'member': member,
+                'contributions': contributions,
+                'loans': loans,
+                'summary': {
+                    'total_contributions': summary.get('total_contributions', 0),
+                    'total_saved': float(summary.get('total_saved', 0)),
+                    'pending_count': summary.get('pending_count', 0),
+                    'overdue_count': summary.get('overdue_count', 0),
+                    'total_penalties': float(summary.get('total_penalties', 0))
+                }
+            }
+        }
+        
+        return jsonify(response)
+        
+    except Exception as e:
+        logger.error(f"Member info error: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 # =============================================================================
 # CHURN PREDICTION FUNCTION
 # =============================================================================
 
 def predict_churn_with_model(features: Dict) -> Dict:
-    """Use trained model to predict churn"""
+    """Use trained model to predict churn with new contribution features"""
     if not MODEL_LOADED:
         return {
             'probability': 0.5,
@@ -457,21 +731,54 @@ def predict_churn_with_model(features: Dict) -> Dict:
             level = "HIGH"
             recommendation = "Immediate outreach required - possible churn risk"
         
+        # Adjust recommendation based on new contribution features
+        if features.get('has_overdue_contributions', False):
+            level = "HIGH"
+            recommendation = f"🔴 CRITICAL: {features.get('overdue_contributions_count', 0)} overdue contribution(s) - immediate payment reminder needed"
+        elif features.get('has_pending_contributions', False):
+            if level == "LOW":
+                level = "MEDIUM"
+            recommendation = f"📋 {features.get('pending_contributions_count', 0)} pending contribution(s) - payment reminder required"
+        
         # Get model confidence
         confidence = float(max(CHURN_MODEL.predict_proba(X_scaled)[0]))
         
         # Identify risk factors
         risk_factors = []
+        
+        if features.get('has_overdue_contributions', False):
+            overdue_count = features.get('overdue_contributions_count', 0)
+            overdue_amount = features.get('overdue_amount_total', 0)
+            risk_factors.append(f"🔴 CRITICAL: {overdue_count} overdue contribution(s) totaling KES {overdue_amount:,.0f}")
+        
+        if features.get('has_pending_contributions', False):
+            pending_count = features.get('pending_contributions_count', 0)
+            pending_amount = features.get('pending_amount_total', 0)
+            risk_factors.append(f"⏳ {pending_count} pending contribution(s) totaling KES {pending_amount:,.0f}")
+        
+        if features.get('has_penalties', False):
+            total_penalties = features.get('total_penalties_paid', 0)
+            risk_factors.append(f"💰 Has paid KES {total_penalties:,.0f} in late penalties")
+        
+        if features.get('warning_behind_schedule', False):
+            missed = features.get('missed_contributions', 0)
+            risk_factors.append(f"📅 Behind schedule by {missed:.0f} contribution(s)")
+        
         if features.get('days_since_last_contrib', 0) > 90:
             risk_factors.append(f"No contributions for {features['days_since_last_contrib']:.0f} days")
+        
         if features.get('warning_no_contrib_3m', 0) == 1:
             risk_factors.append("No activity in last 3 months")
+        
         if features.get('warning_default_history', 0) == 1:
             risk_factors.append("Has defaulted on loans before")
+        
         if features.get('loan_to_savings_ratio', 0) > 2:
             risk_factors.append(f"High debt ratio: {features['loan_to_savings_ratio']:.1f}x savings")
+        
         if features.get('days_since_last_communication', 0) > 60:
             risk_factors.append(f"No communication for {features['days_since_last_communication']:.0f} days")
+        
         if features.get('activity_trend', 1) < 0.5:
             risk_factors.append("Declining contribution activity")
         
@@ -479,7 +786,7 @@ def predict_churn_with_model(features: Dict) -> Dict:
             'probability': float(probability),
             'risk_level': level,
             'confidence': float(confidence),
-            'risk_factors': risk_factors[:3],
+            'risk_factors': risk_factors[:5],
             'recommendation': recommendation,
             'source': 'ml_model',
             'features_used': len(feature_vector)
@@ -513,7 +820,7 @@ def health_check():
         'model_type': type(CHURN_MODEL).__name__ if CHURN_MODEL else None,
         'features_count': len(CHURN_FEATURES),
         'database': 'configured',
-        'api_version': '1.0',
+        'api_version': '2.0',
         'timestamp': datetime.now().isoformat()
     })
 
@@ -523,7 +830,6 @@ def predict_member_churn(member_id):
     try:
         logger.info(f"🔍 Predicting churn for member: {member_id}")
         
-        # Fetch member data from database
         fetcher = DatabaseFetcher()
         member_features = fetcher.fetch_member_data_for_churn(member_id)
         
@@ -533,10 +839,8 @@ def predict_member_churn(member_id):
                 'error': f'Member {member_id} not found'
             }), 404
         
-        # Get churn prediction
         prediction = predict_churn_with_model(member_features)
         
-        # Prepare response
         response = {
             'success': True,
             'data': {
@@ -549,14 +853,16 @@ def predict_member_churn(member_id):
                 'model_confidence': prediction['confidence'],
                 'prediction_source': prediction['source'],
                 
-                # Key metrics for dashboard
                 'metrics': {
                     'days_inactive': member_features.get('days_since_last_contrib', 0),
                     'total_saved': member_features.get('total_saved', 0),
                     'total_loans': member_features.get('total_loans', 0),
                     'outstanding_debt': member_features.get('total_outstanding', 0),
                     'membership_months': round(member_features.get('membership_months', 0), 1),
-                    'last_communication_days': member_features.get('days_since_last_communication', 0)
+                    'last_communication_days': member_features.get('days_since_last_communication', 0),
+                    'pending_count': member_features.get('pending_contributions_count', 0),
+                    'overdue_count': member_features.get('overdue_contributions_count', 0),
+                    'total_penalties': member_features.get('total_penalties_paid', 0)
                 }
             }
         }
@@ -578,7 +884,6 @@ def predict_group_churn(group_id):
     try:
         logger.info(f"👥 Predicting churn for group: {group_id}")
         
-        # Get all members in the group
         conn = DatabaseFetcher().connect()
         if not conn:
             return jsonify({'success': False, 'error': 'Database connection failed'}), 500
@@ -599,7 +904,6 @@ def predict_group_churn(group_id):
                 'error': f'Group {group_id} not found or has no members'
             }), 404
         
-        # Get predictions for each member
         fetcher = DatabaseFetcher()
         results = []
         
@@ -612,15 +916,15 @@ def predict_group_churn(group_id):
                     'name': f"{member['first_name']} {member['last_name']}",
                     'churn_probability': prediction['probability'],
                     'risk_level': prediction['risk_level'],
-                    'risk_factors': prediction['risk_factors'][:2]
+                    'risk_factors': prediction['risk_factors'][:2],
+                    'has_pending': member_features.get('has_pending_contributions', False),
+                    'has_overdue': member_features.get('has_overdue_contributions', False)
                 })
         
-        # Calculate group statistics
         high_risk = sum(1 for r in results if r['risk_level'] == 'HIGH')
         medium_risk = sum(1 for r in results if r['risk_level'] == 'MEDIUM')
         low_risk = sum(1 for r in results if r['risk_level'] == 'LOW')
         
-        # Calculate group health score (0-100)
         if results:
             health_score = 100 - ((high_risk * 10 + medium_risk * 5) / len(results))
         else:
@@ -659,14 +963,12 @@ def groupadmin_dashboard(admin_id):
     try:
         logger.info(f"📊 Generating dashboard for GroupAdmin: {admin_id}")
         
-        # Get the group(s) managed by this admin
         conn = DatabaseFetcher().connect()
         if not conn:
             return jsonify({'success': False, 'error': 'Database connection failed'}), 500
         
         cursor = conn.cursor(dictionary=True)
         
-        # Find which group this admin manages
         cursor.execute("""
             SELECT group_id FROM members 
             WHERE id = %s AND role = 'GroupAdmin'
@@ -681,13 +983,11 @@ def groupadmin_dashboard(admin_id):
         
         group_id = admin['group_id']
         
-        # Get group member count
         cursor.execute("""
             SELECT COUNT(*) as count FROM members WHERE group_id = %s
         """, (group_id,))
         total_members = cursor.fetchone()['count']
         
-        # Get recent activity - USING correct column name
         cursor.execute("""
             SELECT COUNT(*) as count FROM contributions 
             WHERE group_id = %s AND transaction_date >= DATE_SUB(NOW(), INTERVAL 30 DAY)
@@ -697,14 +997,12 @@ def groupadmin_dashboard(admin_id):
         cursor.close()
         conn.close()
         
-        # Get churn predictions for the group
         group_result = predict_group_churn(group_id)
         group_data = group_result.get_json()
         
         if not group_data['success']:
             return group_result
         
-        # Prepare dashboard response
         dashboard = {
             'admin_id': admin_id,
             'group_id': group_id,
@@ -758,27 +1056,21 @@ if __name__ == '__main__':
     print("="*70)
     print(f"📊 Churn Model: {'✅' if MODEL_LOADED else '❌'}")
     print(f"   Features: {len(CHURN_FEATURES)}")
-    print(f"   Accuracy: 99%")
     print("="*70)
     print("📡 API Running on http://localhost:5001")
     print("\n📋 ENDPOINTS:")
     print("  GET  /health                                    - Health check")
-    print("  GET  /api/v1/predict/member/<member_id>        - Predict single member")
-    print("  GET  /api/v1/predict/group/<group_id>          - Predict entire group")
+    print("  GET  /api/v1/member/<member_id>                 - Get member details (contributions, loans)")
+    print("  GET  /api/v1/predict/member/<member_id>        - Predict single member churn")
+    print("  GET  /api/v1/predict/group/<group_id>          - Predict entire group churn")
     print("  GET  /api/v1/dashboard/groupadmin/<admin_id>   - GroupAdmin dashboard")
-    print("\n🎯 FINAL FIXES - USING YOUR ACTUAL COLUMN NAMES:")
-    print("  1. ✅ first_name (not firstName)")
-    print("  2. ✅ last_name (not lastName)")
-    print("  3. ✅ join_date (not joinDate)")
-    print("  4. ✅ transaction_date (not transactionDate)")
-    print("  5. ✅ payment_method (not paymentMethod)")
-    print("  6. ✅ start_date (not startDate)")
-    print("  7. ✅ due_date (not dueDate)")
-    print("  8. ✅ interest_rate (not interestRate)")
-    print("  9. ✅ outstanding_balance (not outstandingBalance)")
-    print("  10. ✅ send_date (not sendDate)")
-    print("  11. ✅ message_content (not messageContent)")
-    print("  12. ✅ phone_number (not phoneNumber)")
+    print("\n🎯 NEW FEATURES INCLUDED:")
+    print("  ✅ Pending contributions tracking")
+    print("  ✅ Overdue contributions detection")
+    print("  ✅ Penalty tracking")
+    print("  ✅ Payment regularity analysis")
+    print("  ✅ Behind schedule detection")
+    print("  ✅ Missed contributions calculation")
     print("="*70)
     
     app.run(host='0.0.0.0', port=5001, debug=True)

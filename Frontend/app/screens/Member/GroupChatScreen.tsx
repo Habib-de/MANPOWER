@@ -1,4 +1,4 @@
-// GroupChatScreen.tsx - WITH START DISCUSSION BUTTON
+// GroupChatScreen.tsx - WITH START DISCUSSION BUTTON & UNREAD COUNT
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
@@ -19,7 +19,7 @@ import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import MemberBottomNav from '../../components/MemberBottomNav';
 
-const API_BASE_URL = 'http://192.168.0.101:8080/api';
+const API_BASE_URL = 'http://172.20.10.2:8080/api';
 
 interface Notification {
   id: string;
@@ -54,14 +54,25 @@ function GroupChatScreen() {
   const [posting, setPosting] = useState(false);
   const [activeTab, setActiveTab] = useState<'discussions' | 'announcements'>('discussions');
   const [showCreatePostModal, setShowCreatePostModal] = useState(false);
+  
+  // ✅ NEW: Unread private messages count
+  const [unreadPrivateMessages, setUnreadPrivateMessages] = useState(0);
 
   useEffect(() => {
     initializeChat();
-  }, []);
+    
+    // ✅ Poll for unread private messages every 10 seconds
+    const interval = setInterval(() => {
+      if (userId) {
+        fetchUnreadPrivateMessages(userId);
+      }
+    }, 10000);
+    
+    return () => clearInterval(interval);
+  }, [userId]);
 
   const initializeChat = async () => {
     try {
-      // Get user data that was stored during login
       const storedUserId = await AsyncStorage.getItem('userId');
       const storedUserName = await AsyncStorage.getItem('userFirstName');
       const storedUserLastName = await AsyncStorage.getItem('userLastName');
@@ -78,10 +89,9 @@ function GroupChatScreen() {
         setUserName(`${storedUserName || ''} ${storedUserLastName || ''}`.trim());
       }
 
-      // Use the groupId that was stored during login
       if (storedGroupId) {
         setGroupId(storedGroupId);
-        fetchAllData(storedGroupId, storedUserId);
+        await fetchAllData(storedGroupId, storedUserId);
       } else {
         Alert.alert('No Group', 'You are not assigned to any group. Please contact your administrator.');
         setLoading(false);
@@ -93,9 +103,29 @@ function GroupChatScreen() {
     }
   };
 
+  // ✅ NEW: Fetch unread private message count
+  const fetchUnreadPrivateMessages = async (currentUserId: string) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/notifications`);
+      if (response.ok) {
+        const allNotifications = await response.json();
+        
+        const unreadCount = allNotifications.filter(
+          (notif: any) => 
+            notif.type === 'PRIVATE_MESSAGE' &&
+            notif.member?.id === currentUserId &&
+            !notif.isRead
+        ).length;
+        
+        setUnreadPrivateMessages(unreadCount);
+      }
+    } catch (error) {
+      console.error('Failed to fetch unread private messages:', error);
+    }
+  };
+
   const fetchAllData = async (targetGroupId: string, currentUserId: string | null) => {
     try {
-      // Fetch ALL notifications from the same endpoint as NotificationsScreen
       const response = await fetch(`${API_BASE_URL}/notifications`);
       if (response.ok) {
         const allNotifications: Notification[] = await response.json();
@@ -103,17 +133,16 @@ function GroupChatScreen() {
         console.log('All notifications fetched:', allNotifications.length);
         console.log('Current user ID:', currentUserId);
 
-        // DISCUSSIONS: Show all group discussions (filter by groupId AND parentId is null)
         const groupDiscussions = allNotifications.filter((notif: Notification) => 
           notif.groupId === targetGroupId && 
           !notif.parentId && 
           !isAdminNotificationType(notif.type) &&
-          notif.type !== 'COMMENT'
+          notif.type !== 'COMMENT' &&
+          notif.type !== 'PRIVATE_MESSAGE'
         );
 
-        // ANNOUNCEMENTS: Show only announcements meant for THIS USER (filter by member.id)
         const userAnnouncements = allNotifications.filter((notif: Notification) => 
-          notif.member?.id === currentUserId && // KEY: Filter by user's member ID
+          notif.member?.id === currentUserId &&
           !notif.parentId && 
           isAdminNotificationType(notif.type)
         );
@@ -121,7 +150,6 @@ function GroupChatScreen() {
         console.log('Group discussions:', groupDiscussions.length);
         console.log('User announcements:', userAnnouncements.length);
 
-        // Add comments to discussions
         const discussionsWithComments = groupDiscussions.map((post: Notification) => {
           const comments = allNotifications.filter((notif: Notification) => 
             notif.parentId === post.id && notif.type === 'COMMENT'
@@ -134,7 +162,6 @@ function GroupChatScreen() {
           };
         });
 
-        // Add comments to announcements
         const announcementsWithComments = userAnnouncements.map((announcement: Notification) => {
           const comments = allNotifications.filter((notif: Notification) => 
             notif.parentId === announcement.id && notif.type === 'COMMENT'
@@ -154,6 +181,11 @@ function GroupChatScreen() {
         setAdminNotifications(announcementsWithComments.sort((a: Notification, b: Notification) => 
           new Date(b.createdOn).getTime() - new Date(a.createdOn).getTime()
         ));
+
+        // ✅ Fetch unread private messages
+        if (currentUserId) {
+          await fetchUnreadPrivateMessages(currentUserId);
+        }
       } else {
         throw new Error('Failed to fetch notifications');
       }
@@ -177,7 +209,6 @@ function GroupChatScreen() {
       return notification.title;
     }
     
-    // Fallback titles based on type
     const typeTitles: {[key: string]: string} = {
       'Alert': '🚨 Important Alert',
       'Information': 'ℹ️ Group Information',
@@ -198,7 +229,6 @@ function GroupChatScreen() {
 
     setPosting(true);
     
-    // Get member data for the current user
     let memberId = userId;
     try {
       const memberResponse = await fetch(`${API_BASE_URL}/members/${userId}`);
@@ -228,9 +258,7 @@ function GroupChatScreen() {
     try {
       const response = await fetch(`${API_BASE_URL}/notifications`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(postData),
       });
 
@@ -257,7 +285,6 @@ function GroupChatScreen() {
       return;
     }
 
-    // Get member data for the current user
     let memberId = userId;
     try {
       const memberResponse = await fetch(`${API_BASE_URL}/members/${userId}`);
@@ -287,9 +314,7 @@ function GroupChatScreen() {
     try {
       const response = await fetch(`${API_BASE_URL}/notifications`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(commentData),
       });
 
@@ -310,7 +335,6 @@ function GroupChatScreen() {
   };
 
   const getDisplayName = (notification: Notification) => {
-    // For admin notifications, show as "Group Admin"
     if (isAdminNotificationType(notification.type)) {
       return 'Group Admin';
     }
@@ -319,7 +343,6 @@ function GroupChatScreen() {
            (notification.member ? `${notification.member.firstName} ${notification.member.lastName}` : 'Member');
   };
 
-  // Helper function to get appropriate badge for notification type
   const getNotificationBadge = (type: string): string => {
     const badgeMap: {[key: string]: string} = {
       'Alert': '🚨 ALERT',
@@ -350,7 +373,6 @@ function GroupChatScreen() {
       <Text style={styles.postTitle}>{item.title || 'Discussion'}</Text>
       <Text style={styles.postMessage}>{item.messageContent}</Text>
       
-      {/* Comments Section */}
       <View style={styles.commentsSection}>
         <Text style={styles.commentsTitle}>
           Comments ({item.comments?.length || 0})
@@ -372,7 +394,6 @@ function GroupChatScreen() {
           </View>
         ))}
         
-        {/* Add Comment Input */}
         <View style={styles.commentInputContainer}>
           <TextInput
             style={styles.commentInput}
@@ -414,7 +435,6 @@ function GroupChatScreen() {
       <Text style={styles.announcementTitle}>{getAdminNotificationTitle(item)}</Text>
       <Text style={styles.announcementMessage}>{item.messageContent}</Text>
       
-      {/* Comments Section */}
       <View style={styles.commentsSection}>
         <Text style={styles.commentsTitle}>
           Member Feedback ({item.comments?.length || 0})
@@ -436,7 +456,6 @@ function GroupChatScreen() {
           </View>
         ))}
         
-        {/* Add Comment Input */}
         <View style={styles.commentInputContainer}>
           <TextInput
             style={styles.commentInput}
@@ -484,13 +503,11 @@ function GroupChatScreen() {
             MAN<Text style={{ color: '#4CAF50' }}>POWER</Text>
           </Text>
         </View>
-        {/* <Text style={styles.chatTitle}>Group Communications</Text> */}
         <TouchableOpacity onPress={() => router.replace('/(member)/dashboard')}>
           <Text style={styles.returnButton}>🏠 Dashboard</Text>
         </TouchableOpacity>
       </View>
 
-      {/* Tab Navigation */}
       <View style={styles.tabContainer}>
         <TouchableOpacity 
           style={[styles.tab, activeTab === 'discussions' && styles.activeTab]}
@@ -532,7 +549,6 @@ function GroupChatScreen() {
           <>
             {activeTab === 'discussions' ? (
               <>
-                {/* Start Discussion Button */}
                 <TouchableOpacity 
                   style={styles.startDiscussionButton}
                   onPress={() => setShowCreatePostModal(true)}
@@ -547,7 +563,32 @@ function GroupChatScreen() {
                   <Text style={styles.startDiscussionArrow}>➔</Text>
                 </TouchableOpacity>
 
-                {/* Discussions List */}
+                {/* ✅ Private Messages Button with Unread Badge */}
+                <TouchableOpacity 
+                  style={styles.privateMessagesButton}
+                  onPress={() => router.push('/(member)/private-chat-list')}
+                >
+                  <View style={styles.privateMessagesLeft}>
+                    <Text style={styles.privateMessagesIcon}>✉️</Text>
+                    <View style={styles.privateMessagesTextContainer}>
+                      <Text style={styles.privateMessagesTitle}>Private Messages</Text>
+                      <Text style={styles.privateMessagesSubtitle}>
+                        Chat directly with group members
+                      </Text>
+                    </View>
+                  </View>
+                  <View style={styles.privateMessagesRight}>
+                    {unreadPrivateMessages > 0 && (
+                      <View style={styles.unreadBadge}>
+                        <Text style={styles.unreadBadgeText}>
+                          {unreadPrivateMessages > 99 ? '99+' : unreadPrivateMessages}
+                        </Text>
+                      </View>
+                    )}
+                    <Text style={styles.privateMessagesArrow}>➔</Text>
+                  </View>
+                </TouchableOpacity>
+
                 <Text style={styles.sectionTitle}>Group Discussions</Text>
                 {discussions.length === 0 ? (
                   <View style={styles.noPosts}>
@@ -568,7 +609,6 @@ function GroupChatScreen() {
               </>
             ) : (
               <>
-                {/* Announcements List */}
                 <Text style={styles.sectionTitle}>My Announcements</Text>
                 {adminNotifications.length === 0 ? (
                   <View style={styles.noPosts}>
@@ -592,7 +632,6 @@ function GroupChatScreen() {
         )}
       </KeyboardAvoidingView>
 
-      {/* Create Post Modal */}
       <Modal
         visible={showCreatePostModal}
         animationType="slide"
@@ -679,7 +718,6 @@ const styles = StyleSheet.create({
   returnButton: { color: '#1565C0', fontWeight: 'bold', fontSize: 14 },
   container: { flex: 1, paddingHorizontal: 16 },
   
-  // Tab Styles
   tabContainer: {
     flexDirection: 'row',
     backgroundColor: '#fff',
@@ -707,7 +745,6 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
 
-  // Start Discussion Button
   startDiscussionButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -746,7 +783,70 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
 
-  // Modal Styles
+  // ✅ Updated Private Messages Button with Badge
+  privateMessagesButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#E8F5E9',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+    borderWidth: 1,
+    borderColor: '#C8E6C9',
+  },
+  privateMessagesLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  privateMessagesRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  privateMessagesIcon: {
+    fontSize: 24,
+    marginRight: 12,
+  },
+  privateMessagesTextContainer: {
+    flex: 1,
+  },
+  privateMessagesTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#2E7D32',
+    marginBottom: 2,
+  },
+  privateMessagesSubtitle: {
+    fontSize: 14,
+    color: '#666',
+  },
+  privateMessagesArrow: {
+    fontSize: 18,
+    color: '#2E7D32',
+    fontWeight: 'bold',
+  },
+  unreadBadge: {
+    backgroundColor: '#F44336',
+    borderRadius: 12,
+    minWidth: 22,
+    height: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 6,
+    marginRight: 8,
+  },
+  unreadBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+
   modalContainer: {
     flex: 1,
     backgroundColor: '#fff',

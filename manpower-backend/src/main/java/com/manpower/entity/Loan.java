@@ -74,6 +74,13 @@ public class Loan implements Serializable {
     @Column(name = "reason", length = 255)
     private String reason;
 
+    @ManyToOne
+    @JoinColumn(name = "guarantor_id")
+    private Member guarantor;
+    
+    @Column(name = "guarantor_amount")
+    private BigDecimal guarantorAmount;
+
     // ============ NEW FIELDS FOR ML INTEGRATION ============
     
     @Column(name = "ml_decision_log_id")
@@ -348,6 +355,24 @@ public class Loan implements Serializable {
 
     public void setMlDecisionReasoning(String mlDecisionReasoning) {
         this.mlDecisionReasoning = mlDecisionReasoning;
+    }
+
+    // ============ GUARANTOR GETTERS AND SETTERS ============
+    
+    public Member getGuarantor() {
+        return guarantor;
+    }
+
+    public void setGuarantor(Member guarantor) {
+        this.guarantor = guarantor;
+    }
+
+    public BigDecimal getGuarantorAmount() {
+        return guarantorAmount;
+    }
+
+    public void setGuarantorAmount(BigDecimal guarantorAmount) {
+        this.guarantorAmount = guarantorAmount;
     }
 
     // ============ HELPER METHODS ============

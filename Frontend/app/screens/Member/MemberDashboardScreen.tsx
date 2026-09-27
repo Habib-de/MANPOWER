@@ -19,7 +19,7 @@ import { AuthContext } from '../../../app/_layout';
 import MemberBottomNav from '../../components/MemberBottomNav';
 import { Ionicons } from '@expo/vector-icons';
 
-const BASE_URL = 'http://192.168.0.101:8080/api';
+const BASE_URL = 'http://172.20.10.2:8080/api';
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 interface LoggedInMember {
@@ -213,60 +213,113 @@ function MemberDashboardScreen() {
       console.error('Error fetching notifications:', error);
     }
 
-    // Fetch Meetings - Enhanced version
-    try {
-      const response = await fetch(`${BASE_URL}/meetings`);
-      console.log('🔍 Meetings API Response status:', response.status);
+    // ✅ FIXED: Fetch meetings and filter by group
+  try {
+    const response = await fetch(`${BASE_URL}/meetings`);
+    console.log('🔍 Meetings API Response status:', response.status);
+    
+    if (response.ok) {
+      const meetingsData = await response.json();
+      console.log('📅 All meetings data:', meetingsData.length);
       
-      if (response.ok) {
-        const meetingsData = await response.json();
-        console.log('📅 All meetings data:', meetingsData);
-        
-        setAllMeetings(meetingsData || []);
+      // ✅ Get the user's group ID
+      const userGroupId = await AsyncStorage.getItem('userGroupId');
+      console.log('👤 User Group ID:', userGroupId);
 
-        // Count upcoming meetings (meetings with future dates)
-        const now = new Date();
-        const upcomingMeetings = meetingsData.filter((m: any) => {
-          try {
-            // Try different possible date fields
-            const meetingDate = new Date(m.date || m.startTime || m.meetingDate || m.createdOn);
-            return meetingDate > now && meetingDate.toString() !== 'Invalid Date';
-          } catch (error) {
-            console.log('❌ Error parsing meeting date:', m);
-            return false;
+      // ✅ Filter meetings for the user's group only
+      const groupMeetings = meetingsData.filter((m: any) => {
+        // Check different possible group ID field names
+        const meetingGroupId = m.group?.id || m.groupId || m.group_id;
+        return meetingGroupId === userGroupId;
+      });
+      
+      console.log('📋 Group meetings:', groupMeetings.length);
+
+      // ✅ Count upcoming meetings (meetings with future dates)
+      const now = new Date();
+      const upcomingMeetings = groupMeetings.filter((m: any) => {
+        try {
+          // ✅ Try different possible date fields
+          let meetingDate = null;
+          
+          if (m.meetingDate) {
+            meetingDate = new Date(m.meetingDate);
+          } else if (m.date) {
+            meetingDate = new Date(m.date);
+          } else if (m.startTime) {
+            meetingDate = new Date(m.startTime);
+          } else if (m.createdOn) {
+            meetingDate = new Date(m.createdOn);
           }
+          
+          // ✅ Combine with meeting time if available
+          if (meetingDate && m.meetingTime) {
+            const timeParts = m.meetingTime.split(':');
+            if (timeParts.length >= 2) {
+              meetingDate.setHours(parseInt(timeParts[0]), parseInt(timeParts[1]), 0);
+            }
+          }
+          
+          const isValid = meetingDate !== null && meetingDate.toString() !== 'Invalid Date';
+          const isFuture = isValid && (meetingDate as Date) > now;
+          
+          return isFuture;
+        } catch (error) {
+          console.log('❌ Error parsing meeting date:', m.title, error);
+          return false;
+        }
+      });
+      
+      console.log('✅ Upcoming meetings count:', upcomingMeetings.length);
+      setUpcomingMeetingsCount(upcomingMeetings.length);
+
+      // ✅ Set the next upcoming meeting for display
+      if (upcomingMeetings.length > 0) {
+        // Sort by date (soonest first)
+        upcomingMeetings.sort((a: any, b: any) => {
+          const dateA = new Date(a.meetingDate || a.date || a.startTime);
+          const dateB = new Date(b.meetingDate || b.date || b.startTime);
+          return dateA.getTime() - dateB.getTime();
         });
         
-        console.log('✅ Upcoming meetings count:', upcomingMeetings.length);
-        console.log('📋 Upcoming meetings:', upcomingMeetings);
-        setUpcomingMeetingsCount(upcomingMeetings.length);
-
-        // Set the next upcoming meeting for display
-        if (upcomingMeetings.length > 0) {
-          const nextMeeting = upcomingMeetings[0];
-          const meetingDate = new Date(nextMeeting.date || nextMeeting.startTime || nextMeeting.meetingDate);
-          const dateStr = meetingDate.toString() !== 'Invalid Date' 
-            ? meetingDate.toLocaleString('en-KE', {
-                weekday: 'short', 
-                day: '2-digit', 
-                month: 'short', 
-                hour: '2-digit', 
-                minute: '2-digit',
-              })
-            : 'Date TBD';
-          setUpcomingMeeting({
-            date: dateStr,
-            title: nextMeeting.title || 'Upcoming Meeting',
-          });
-        } else {
-          setUpcomingMeeting(null);
+        const nextMeeting = upcomingMeetings[0];
+        console.log('📌 Next meeting:', nextMeeting.title);
+        
+        let meetingDate = new Date(nextMeeting.meetingDate || nextMeeting.date || nextMeeting.startTime);
+        
+        // ✅ Combine with time
+        if (nextMeeting.meetingTime) {
+          const timeParts = nextMeeting.meetingTime.split(':');
+          if (timeParts.length >= 2) {
+            meetingDate.setHours(parseInt(timeParts[0]), parseInt(timeParts[1]), 0);
+          }
         }
+        
+        const dateStr = meetingDate.toString() !== 'Invalid Date' 
+          ? meetingDate.toLocaleString('en-KE', {
+              weekday: 'short', 
+              day: '2-digit', 
+              month: 'short', 
+              hour: '2-digit', 
+              minute: '2-digit',
+            })
+          : 'Date TBD';
+        
+        setUpcomingMeeting({
+          date: dateStr,
+          title: nextMeeting.title || 'Upcoming Meeting',
+        });
       } else {
-        console.error(`❌ Error fetching meetings: ${response.status} ${response.statusText}`);
+        console.log('❌ No upcoming meetings found for this group');
+        setUpcomingMeeting(null);
+        setUpcomingMeetingsCount(0);
       }
-    } catch (error) {
-      console.error('❌ Error fetching meetings:', error);
+    } else {
+      console.error(`❌ Error fetching meetings: ${response.status} ${response.statusText}`);
     }
+  } catch (error) {
+    console.error('❌ Error fetching meetings:', error);
+  }
 
     // Fetch Total Group Volunteer Contributions
     try {
@@ -422,7 +475,9 @@ function MemberDashboardScreen() {
     }
   };
 
-  const totalContributed = contributions.reduce((sum, c) => sum + c.amount, 0);
+  const totalContributed = contributions
+  .filter(c => c.status === 'COMPLETED' || c.status === 'SUCCESS' || c.status === 'Completed')
+  .reduce((sum, c) => sum + c.amount, 0);
   const totalContributionsCount = contributions.filter(c => 
     c.status === 'COMPLETED' || c.status === 'SUCCESS' || c.status === 'Completed'
   ).length;
@@ -465,6 +520,8 @@ function MemberDashboardScreen() {
     { name: 'Notifications', icon: '🔔', route: '/(member)/notifications', color: '#FF9800' },
     { name: 'My Profile', icon: '👤', route: '/(member)/profile', color: '#2196F3' },
     { name: 'Loan Status', icon: '📝', route: '/(member)/loans', color: '#F44336' },
+    { name: 'Dividends', icon: '🎁', route: '/(member)/dividends', color: '#FF9800' },
+    { name: 'Guarantee Requests', icon: '🤝', route: '/(member)/guarantor-requests', color: '#9C27B0' },
   ];
 
   if (loadingMemberData || loadingContributions) {

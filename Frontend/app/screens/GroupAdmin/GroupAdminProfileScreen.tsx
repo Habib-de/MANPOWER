@@ -19,7 +19,7 @@ import { Ionicons } from '@expo/vector-icons';
 import GroupAdminBottomNav from '../../components/GroupAdminBottomNav';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const BASE_URL = 'http://192.168.0.101:8080/api';
+const BASE_URL = 'http://172.20.10.2:8080/api';
 
 interface AdminProfile {
   id: string;

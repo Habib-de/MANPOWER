@@ -15,7 +15,7 @@ import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import SuperAdminBottomNav from '../../components/SuperAdminBottomNav';
 
-const BASE_URL = 'http://192.168.0.101:8080/api'; // Ensure this is your correct backend URL
+const BASE_URL = 'http://172.20.10.2:8080/api'; // Ensure this is your correct backend URL
 
 interface Group {
   id: string;

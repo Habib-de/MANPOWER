@@ -4,6 +4,7 @@ import com.manpower.entity.Contribution;
 import com.manpower.entity.Group;
 import com.manpower.entity.Member;
 import com.manpower.entity.VolunteerCampaign;
+import com.manpower.enums.TransactionStatus;
 import com.manpower.repository.ContributionRepository;
 import com.manpower.repository.GroupRepository;
 import com.manpower.repository.MemberRepository;
@@ -13,6 +14,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.*;
 
 @Service
@@ -27,7 +30,6 @@ public class ContributionServiceImpl implements ContributionService {
     @Autowired
     private GroupRepository groupRepository;
     
-    // 👇 ADD THIS
     @Autowired
     private VolunteerCampaignRepository volunteerCampaignRepository;
 
@@ -41,21 +43,18 @@ public class ContributionServiceImpl implements ContributionService {
             throw new IllegalArgumentException("Contribution must be associated with a group (ID cannot be null).");
         }
 
-        // Load full member entity
         Optional<Member> memberOpt = memberRepository.findById(contribution.getMember().getId());
         if (!memberOpt.isPresent()) {
             throw new IllegalArgumentException("Member with ID " + contribution.getMember().getId() + " not found.");
         }
         contribution.setMember(memberOpt.get());
 
-        // Load full group entity
         Optional<Group> groupOpt = groupRepository.findById(contribution.getGroup().getId());
         if (!groupOpt.isPresent()) {
             throw new IllegalArgumentException("Group with ID " + contribution.getGroup().getId() + " not found.");
         }
         contribution.setGroup(groupOpt.get());
 
-        // 👇👇👇 CRITICAL FIX: Load and set volunteer campaign if ID exists
         if (contribution.getVolunteerCampaign() != null && contribution.getVolunteerCampaign().getId() != null) {
             Optional<VolunteerCampaign> campaignOpt = volunteerCampaignRepository.findById(
                 contribution.getVolunteerCampaign().getId()
@@ -138,5 +137,88 @@ public class ContributionServiceImpl implements ContributionService {
             throw new IllegalArgumentException("Group with ID " + groupId + " not found.");
         }
         return contributionRepository.sumByGroupId(groupId);
+    }
+
+    // ========== NEW UPDATE METHOD ==========
+    
+    @Override
+    @Transactional
+    public Contribution updateContribution(String id, Map<String, Object> updates) {
+        Contribution contribution = contributionRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Contribution not found with id: " + id));
+        
+        // Update status
+        if (updates.containsKey("status")) {
+            String statusValue = (String) updates.get("status");
+            contribution.setStatus(TransactionStatus.valueOf(statusValue));
+        }
+        
+        // Update payment date
+        if (updates.containsKey("paymentDate")) {
+            String paymentDateStr = (String) updates.get("paymentDate");
+            contribution.setPaymentDate(LocalDate.parse(paymentDateStr));
+        }
+        
+        // Update payment method
+        if (updates.containsKey("paymentMethod")) {
+            contribution.setPaymentMethod((String) updates.get("paymentMethod"));
+        }
+        
+        // Update isLate
+        if (updates.containsKey("isLate")) {
+            contribution.setIsLate((Boolean) updates.get("isLate"));
+        }
+        
+        // Update daysLate
+        if (updates.containsKey("daysLate")) {
+            Object daysLateObj = updates.get("daysLate");
+            if (daysLateObj instanceof Integer) {
+                contribution.setDaysLate((Integer) daysLateObj);
+            } else if (daysLateObj instanceof Long) {
+                contribution.setDaysLate(((Long) daysLateObj).intValue());
+            }
+        }
+        
+        // Update penaltyApplied
+        if (updates.containsKey("penaltyApplied")) {
+            Object penalty = updates.get("penaltyApplied");
+            if (penalty instanceof Integer) {
+                contribution.setPenaltyApplied(BigDecimal.valueOf((Integer) penalty));
+            } else if (penalty instanceof Double) {
+                contribution.setPenaltyApplied(BigDecimal.valueOf((Double) penalty));
+            } else if (penalty instanceof BigDecimal) {
+                contribution.setPenaltyApplied((BigDecimal) penalty);
+            }
+        }
+        
+        // Update amount (if penalty was added)
+        if (updates.containsKey("amount")) {
+            Object amount = updates.get("amount");
+            if (amount instanceof Integer) {
+                contribution.setAmount(BigDecimal.valueOf((Integer) amount));
+            } else if (amount instanceof Double) {
+                contribution.setAmount(BigDecimal.valueOf((Double) amount));
+            } else if (amount instanceof BigDecimal) {
+                contribution.setAmount((BigDecimal) amount);
+            }
+        }
+        
+        // Update description
+        if (updates.containsKey("description")) {
+            contribution.setDescription((String) updates.get("description"));
+        }
+        
+        // Update modifiedBy
+        if (updates.containsKey("modifiedBy")) {
+            contribution.setModifiedBy((String) updates.get("modifiedBy"));
+        }
+        
+        // Update modifiedOn
+        if (updates.containsKey("modifiedOn")) {
+            String modifiedOnStr = (String) updates.get("modifiedOn");
+            contribution.setModifiedOn(LocalDateTime.parse(modifiedOnStr));
+        }
+        
+        return contributionRepository.save(contribution);
     }
 }

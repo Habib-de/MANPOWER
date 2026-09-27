@@ -5,22 +5,20 @@ import {
   StyleSheet,
   SafeAreaView,
   TextInput,
-  // Alert, // COMMENT OUT THIS IMPORT
   ScrollView,
   Image,
   TouchableOpacity,
   ActivityIndicator,
-  Platform, // ADD THIS
+  Platform,
 } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
 import GroupAdminBottomNav from '../../components/GroupAdminBottomNav';
 
-const API_BASE_URL = 'http://192.168.0.101:8080/api';
+const API_BASE_URL = 'http://172.20.10.2:8080/api';
 
-// ADD THIS HELPER FUNCTION at the top (after imports, before component)
 const showAlert = (title: string, message: string, onOk?: () => void) => {
   console.log(`🔔 Alert: ${title} - ${message}`);
   if (Platform.OS === 'web') {
@@ -58,6 +56,7 @@ type Expense = {
   description: string;
   dateIncurred: string;
   approvedBy: {
+    id: string;
     firstName: string;
     lastName: string;
   };
@@ -80,12 +79,15 @@ export default function RecordExpenseScreen(): React.JSX.Element {
   const [groupData, setGroupData] = useState<Group | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
   const [groupBalance, setGroupBalance] = useState<number>(0);
+  const [totalContributions, setTotalContributions] = useState<number>(0);
+  const [totalExpenses, setTotalExpenses] = useState<number>(0);
+  const [totalInvested, setTotalInvested] = useState<number>(0);
+  const [pendingContributions, setPendingContributions] = useState<number>(0);
   const [groupExpenses, setGroupExpenses] = useState<Expense[]>([]);
   const [filteredExpenses, setFilteredExpenses] = useState<Expense[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   
-  // Filter states
   const [filterType, setFilterType] = useState<FilterType>('all');
   const [selectedMonth, setSelectedMonth] = useState<string>('');
   const [selectedYear, setSelectedYear] = useState<string>('');
@@ -100,7 +102,6 @@ export default function RecordExpenseScreen(): React.JSX.Element {
     approvedBy: '',
   });
 
-  // Months and years for filters
   const months = [
     { value: '01', label: 'January' },
     { value: '02', label: 'February' },
@@ -119,6 +120,15 @@ export default function RecordExpenseScreen(): React.JSX.Element {
   const currentYear = new Date().getFullYear();
   const years = Array.from({ length: 10 }, (_, i) => 
     (currentYear - 5 + i).toString()
+  );
+
+  useFocusEffect(
+    React.useCallback(() => {
+      if (groupId) {
+        fetchGroupBalance(groupId);
+        fetchGroupExpenses(groupId);
+      }
+    }, [groupId])
   );
 
   useEffect(() => {
@@ -150,7 +160,6 @@ export default function RecordExpenseScreen(): React.JSX.Element {
   }, []);
 
   useEffect(() => {
-    // Apply filters whenever expenses or filter settings change
     applyFilters();
   }, [groupExpenses, filterType, selectedMonth, selectedYear, customMonth, customYear]);
 
@@ -169,7 +178,6 @@ export default function RecordExpenseScreen(): React.JSX.Element {
       const response = await axios.get(`${API_BASE_URL}/members/by-group/${gId}`);
       setMembers(response.data);
       
-      // Set current user as default approver if they are a member
       const currentUserId = await AsyncStorage.getItem('userId');
       if (currentUserId && response.data.find((m: Member) => m.id === currentUserId)) {
         setFormData(prev => ({ ...prev, approvedBy: currentUserId }));
@@ -180,25 +188,30 @@ export default function RecordExpenseScreen(): React.JSX.Element {
     }
   };
 
-  // UPDATED: Balance calculation now includes investments
   const fetchGroupBalance = async (gId: string) => {
     try {
-      // Calculate balance from contributions, expenses, AND investments
       const [contributionsRes, expensesRes, investmentsRes] = await Promise.all([
         axios.get(`${API_BASE_URL}/contributions/group/${gId}`),
         axios.get(`${API_BASE_URL}/expenses`),
         axios.get(`${API_BASE_URL}/investments/group/${gId}`)
       ]);
 
-      const totalContributions = contributionsRes.data.reduce(
+      const allContributions = contributionsRes.data;
+      const completedContributions = allContributions.filter((c: any) => c.status === 'Completed');
+      const pendingContributionsList = allContributions.filter((c: any) => c.status === 'Pending');
+      
+      const totalCompleted = completedContributions.reduce(
+        (sum: number, contribution: any) => sum + contribution.amount, 0
+      );
+      const totalPending = pendingContributionsList.reduce(
         (sum: number, contribution: any) => sum + contribution.amount, 0
       );
 
-      const groupExpenses = expensesRes.data.filter(
+      const groupExpensesList = expensesRes.data.filter(
         (expense: any) => expense.group?.id === gId
       );
       
-      const totalExpenses = groupExpenses.reduce(
+      const totalExpensesSum = groupExpensesList.reduce(
         (sum: number, expense: any) => sum + expense.amount, 0
       );
 
@@ -206,12 +219,17 @@ export default function RecordExpenseScreen(): React.JSX.Element {
         (investment: any) => investment.group?.id === gId
       );
       
-      const totalInvested = groupInvestments.reduce(
+      const totalInvestedSum = groupInvestments.reduce(
         (sum: number, investment: any) => sum + investment.amountInvested, 0
       );
 
-      // Available balance = Contributions - Expenses - Investments
-      const balance = totalContributions - totalExpenses - totalInvested;
+      // Available balance = Completed Contributions - Expenses - Investments
+      const balance = totalCompleted - totalExpensesSum - totalInvestedSum;
+      
+      setTotalContributions(totalCompleted);
+      setPendingContributions(totalPending);
+      setTotalExpenses(totalExpensesSum);
+      setTotalInvested(totalInvestedSum);
       setGroupBalance(balance);
     } catch (err) {
       console.error('❌ Error calculating balance:', err);
@@ -224,7 +242,6 @@ export default function RecordExpenseScreen(): React.JSX.Element {
       const response = await axios.get(`${API_BASE_URL}/expenses`);
       const allExpenses = response.data;
       
-      // Filter expenses for this specific group and format them
       const expenses = allExpenses
         .filter((expense: any) => expense.group?.id === gId)
         .map((expense: any) => ({
@@ -232,12 +249,12 @@ export default function RecordExpenseScreen(): React.JSX.Element {
           amount: expense.amount,
           description: expense.description,
           dateIncurred: expense.dateIncurred,
-          approvedBy: expense.approvedBy || { firstName: 'Unknown', lastName: '' }
+          approvedBy: expense.approvedBy || { id: '', firstName: 'Unknown', lastName: '' }
         }))
         .sort((a: Expense, b: Expense) => new Date(b.dateIncurred).getTime() - new Date(a.dateIncurred).getTime());
 
       setGroupExpenses(expenses);
-      setFilteredExpenses(expenses); // Initialize filtered expenses with all expenses
+      setFilteredExpenses(expenses);
     } catch (err) {
       console.error('❌ Error fetching expenses:', err);
       setGroupExpenses([]);
@@ -252,11 +269,11 @@ export default function RecordExpenseScreen(): React.JSX.Element {
       case 'this-month':
         const now = new Date();
         const currentMonth = now.getMonth() + 1;
-        const currentYear = now.getFullYear();
+        const currentYearNum = now.getFullYear();
         filtered = filtered.filter(expense => {
           const expenseDate = new Date(expense.dateIncurred);
           return expenseDate.getMonth() + 1 === currentMonth && 
-                 expenseDate.getFullYear() === currentYear;
+                 expenseDate.getFullYear() === currentYearNum;
         });
         break;
 
@@ -282,14 +299,8 @@ export default function RecordExpenseScreen(): React.JSX.Element {
           });
         }
         break;
-
-      case 'all':
-      default:
-        // No filtering needed
-        break;
     }
 
-    // Apply month/year filters if selected
     if (selectedMonth) {
       filtered = filtered.filter(expense => {
         const expenseDate = new Date(expense.dateIncurred);
@@ -313,7 +324,6 @@ export default function RecordExpenseScreen(): React.JSX.Element {
     setFilterType(type);
     setShowCustomFilter(type === 'custom');
     
-    // Reset month/year filters when changing filter type
     if (type !== 'all') {
       setSelectedMonth('');
       setSelectedYear('');
@@ -367,13 +377,16 @@ export default function RecordExpenseScreen(): React.JSX.Element {
       return false;
     }
 
-    // Check if group has sufficient balance (now includes investments)
     const expenseAmount = parseFloat(formData.amount);
     
     if (expenseAmount > groupBalance) {
       showAlert(
         'Insufficient Funds', 
-        `Expense amount (KES ${expenseAmount.toLocaleString()}) exceeds available balance (KES ${groupBalance.toLocaleString()}).`
+        `Expense amount (KES ${expenseAmount.toLocaleString()}) exceeds available balance (KES ${groupBalance.toLocaleString()}).\n\n` +
+        `💰 Total Completed Contributions: KES ${totalContributions.toLocaleString()}\n` +
+        `📋 Pending Contributions: KES ${pendingContributions.toLocaleString()}\n` +
+        `💸 Total Expenses: KES ${totalExpenses.toLocaleString()}\n` +
+        `📈 Total Invested: KES ${totalInvested.toLocaleString()}`
       );
       return false;
     }
@@ -395,16 +408,15 @@ export default function RecordExpenseScreen(): React.JSX.Element {
         return;
       }
 
-      // SIMPLIFIED PAYLOAD - Only send IDs, not full objects
       const payload = {
         group: {
-          id: groupData.id, // Just send the group ID
+          id: groupData.id,
         },
         amount: parseFloat(formData.amount),
         description: formData.description,
         dateIncurred: `${formData.dateIncurred}T00:00:00.000Z`,
         approvedBy: {
-          id: approvedByMember.id, // Just send the member ID
+          id: approvedByMember.id,
         },
         createdBy: adminId,
         modifiedBy: adminId,
@@ -413,15 +425,12 @@ export default function RecordExpenseScreen(): React.JSX.Element {
         mansoftTenantId: await AsyncStorage.getItem('mansoftTenantId') || '',
       };
 
-      console.log('Submitting expense payload:', JSON.stringify(payload, null, 2));
-
       await axios.post(`${API_BASE_URL}/expenses`, payload);
 
       showAlert(
         'Success', 
         `Expense of KES ${parseFloat(formData.amount).toLocaleString()} recorded successfully.`,
         () => {
-          // Reset form and refresh data
           setFormData({
             amount: '',
             description: '',
@@ -440,13 +449,7 @@ export default function RecordExpenseScreen(): React.JSX.Element {
       
       if (axios.isAxiosError(err)) {
         if (err.response) {
-          if (err.response.status === 500) {
-            errorMessage = err.response.data?.message || 'Server error. Please try again.';
-          } else if (err.response.status === 400) {
-            errorMessage = err.response.data?.message || 'Invalid data. Please check your inputs.';
-          } else {
-            errorMessage = err.response.data?.message || `Error: ${err.response.status}`;
-          }
+          errorMessage = err.response.data?.message || 'Server error. Please try again.';
         } else if (err.request) {
           errorMessage = 'No response from server. Check your network connection.';
         } else {
@@ -480,10 +483,37 @@ export default function RecordExpenseScreen(): React.JSX.Element {
       <ScrollView contentContainerStyle={styles.container}>
         <Text style={styles.title}>Record Group Expense</Text>
         
-        {/* Balance Information */}
+        {/* Balance Information Card - UPDATED */}
         <View style={styles.balanceCard}>
           <Text style={styles.balanceLabel}>Available Balance</Text>
           <Text style={styles.balanceAmount}>KES {groupBalance.toLocaleString()}</Text>
+          
+          {/* Financial Summary */}
+          <View style={styles.financialSummary}>
+            <View style={styles.summaryRow}>
+              <Text style={styles.summaryLabel}>Total Completed Contributions:</Text>
+              <Text style={styles.summaryValueGreen}>KES {totalContributions.toLocaleString()}</Text>
+            </View>
+            <View style={styles.summaryRow}>
+              <Text style={styles.summaryLabel}>Pending Contributions:</Text>
+              <Text style={styles.summaryValueOrange}>KES {pendingContributions.toLocaleString()}</Text>
+            </View>
+            <View style={styles.summaryRow}>
+              <Text style={styles.summaryLabel}>Total Expenses:</Text>
+              <Text style={styles.summaryValueRed}>KES {totalExpenses.toLocaleString()}</Text>
+            </View>
+            <View style={styles.summaryRow}>
+              <Text style={styles.summaryLabel}>Total Invested:</Text>
+              <Text style={styles.summaryValuePurple}>KES {totalInvested.toLocaleString()}</Text>
+            </View>
+            <View style={styles.divider} />
+            <View style={styles.summaryRow}>
+              <Text style={styles.summaryLabelBold}>Formula:</Text>
+              <Text style={styles.summaryFormula}>
+                Contributions - Expenses - Investments
+              </Text>
+            </View>
+          </View>
           
           {expenseAmount > 0 && (
             <View style={styles.balancePreview}>
@@ -549,7 +579,7 @@ export default function RecordExpenseScreen(): React.JSX.Element {
               </Picker>
 
               <Text style={styles.helperText}>
-                * Expenses will be deducted from the group's available balance (contributions minus expenses and investments). Please refresh the page to see the new balance 
+                * Expenses will be deducted from the group's available balance (Completed Contributions - Expenses - Investments)
               </Text>
             </View>
 
@@ -577,7 +607,6 @@ export default function RecordExpenseScreen(): React.JSX.Element {
                 <Text style={styles.filterSummary}>{getFilterSummary()}</Text>
               </View>
 
-              {/* Filter Controls */}
               <View style={styles.filterContainer}>
                 <Text style={styles.filterLabel}>Quick Filters:</Text>
                 <View style={styles.filterButtons}>
@@ -634,7 +663,6 @@ export default function RecordExpenseScreen(): React.JSX.Element {
                   </TouchableOpacity>
                 </View>
 
-                {/* Custom Month/Year Filter */}
                 {showCustomFilter && (
                   <View style={styles.customFilterContainer}>
                     <Text style={styles.customFilterLabel}>Select Month & Year:</Text>
@@ -664,7 +692,6 @@ export default function RecordExpenseScreen(): React.JSX.Element {
                   </View>
                 )}
 
-                {/* Month/Year Filters */}
                 <View style={styles.monthYearFilterContainer}>
                   <Text style={styles.filterLabel}>Filter by:</Text>
                   <View style={styles.pickerRow}>
@@ -692,7 +719,6 @@ export default function RecordExpenseScreen(): React.JSX.Element {
                   </View>
                 </View>
 
-                {/* Filtered Total */}
                 {filteredExpenses.length > 0 && (
                   <View style={styles.filteredTotalContainer}>
                     <Text style={styles.filteredTotalLabel}>
@@ -705,7 +731,6 @@ export default function RecordExpenseScreen(): React.JSX.Element {
                 )}
               </View>
 
-              {/* Expenses List */}
               {filteredExpenses.length === 0 ? (
                 <Text style={styles.noExpenses}>No expenses found</Text>
               ) : (
@@ -787,6 +812,57 @@ const styles = StyleSheet.create({
     fontSize: 28, 
     fontWeight: 'bold', 
     color: '#2E7D32',
+  },
+  financialSummary: {
+    width: '100%',
+    marginTop: 15,
+    paddingTop: 15,
+    borderTopWidth: 1,
+    borderTopColor: '#eee',
+  },
+  summaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  summaryLabel: {
+    fontSize: 13,
+    color: '#666',
+  },
+  summaryLabelBold: {
+    fontSize: 13,
+    fontWeight: 'bold',
+    color: '#333',
+  },
+  summaryValueGreen: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#2E7D32',
+  },
+  summaryValueOrange: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#FF9800',
+  },
+  summaryValueRed: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#F44336',
+  },
+  summaryValuePurple: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#9C27B0',
+  },
+  summaryFormula: {
+    fontSize: 12,
+    color: '#666',
+    fontStyle: 'italic',
+  },
+  divider: {
+    height: 1,
+    backgroundColor: '#E0E0E0',
+    marginVertical: 8,
   },
   balancePreview: {
     flexDirection: 'row',
@@ -873,7 +949,6 @@ const styles = StyleSheet.create({
     fontWeight: 'bold', 
     fontSize: 16,
   },
-  // Expense History Styles
   historySection: {
     backgroundColor: '#fff',
     padding: 15,
@@ -900,7 +975,6 @@ const styles = StyleSheet.create({
     marginTop: 5,
     fontStyle: 'italic',
   },
-  // Filter Styles
   filterContainer: {
     backgroundColor: '#F8F9FA',
     padding: 15,

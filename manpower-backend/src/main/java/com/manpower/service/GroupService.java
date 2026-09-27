@@ -1,11 +1,15 @@
 package com.manpower.service;
 
+import com.manpower.dto.GroupSettingsDTO;
 import com.manpower.entity.Group;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 
 public interface GroupService {
 
+    // ========== EXISTING METHODS ==========
+    
     List<Group> getAllGroups();
 
     Optional<Group> getGroupById(String id);
@@ -18,9 +22,8 @@ public interface GroupService {
 
     Group terminateGroup(String id);
     
-    // ========== NEW MPESA METHODS ==========
+    // ========== MPESA METHODS ==========
     
-    // Configure MPESA credentials for a group
     Group configureGroupMpesa(String groupId, 
                              String consumerKey, 
                              String consumerSecret, 
@@ -28,15 +31,25 @@ public interface GroupService {
                              String passkey, 
                              String callbackUrl);
     
-    // Activate/Deactivate MPESA for a group
     Group toggleGroupMpesa(String groupId, boolean isActive);
     
-    // Get group with MPESA credentials (for payment processing)
     Optional<Group> getGroupWithActiveMpesa(String groupId);
     
-    // Get all groups with active MPESA
     List<Group> getAllGroupsWithActiveMpesa();
     
-    // Update MPESA callback URL
     Group updateMpesaCallbackUrl(String groupId, String callbackUrl);
+    
+    // ========== NEW CONTRIBUTION SETTINGS METHODS ==========
+    
+    // Update group contribution settings (EDIT GROUP endpoint)
+    Group updateGroupSettings(String groupId, GroupSettingsDTO settingsDTO, String adminId);
+    
+    // Get group contribution settings
+    GroupSettingsDTO getGroupSettings(String groupId);
+    
+    // Generate pending contributions for a group based on its schedule
+    void generatePendingContributions(String groupId);
+    
+    // Calculate next due date based on frequency and due day
+    LocalDate calculateNextDueDate(Group group);
 }

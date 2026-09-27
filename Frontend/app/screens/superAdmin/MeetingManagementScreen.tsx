@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 
-const BASE_URL = 'http://192.168.0.101:8080/api'; // 🛜 Update to match your local IP if needed
+const BASE_URL = 'http://172.20.10.2:8080/api'; // 🛜 Update to match your local IP if needed
 
 function MeetingManagementScreen(): React.JSX.Element {
   const navigation = useNavigation();

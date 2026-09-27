@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,16 +11,25 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Modal,
+  Animated,
+  Dimensions,
 } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
+import { Ionicons } from '@expo/vector-icons';
 import GroupAdminBottomNav from '../../components/GroupAdminBottomNav';
-// import { getInvestmentAdvice } from '../../../services/geminiService';
 
-const API_BASE_URL = 'http://192.168.0.101:8080/api';
+// ✅ AI IMPORTS
+import InvestmentAIChat from '../../../components/InvestmentAIChat';
+import InvestmentRecommendations from '../../../components/InvestmentRecommendations';
+import { InvestmentContext } from '../../../services/geminiService';
 
+const { width } = Dimensions.get('window');
+const API_BASE_URL = 'http://172.20.10.2:8080/api';
+
+// ============ TYPES ============
 type Group = {
   id: string;
   groupName: string;
@@ -71,12 +80,13 @@ type FormData = {
   approvedBy: string;
 };
 
-// Investment status types to match backend
 type InvestmentStatus = 'ACTIVE' | 'MATURED' | 'SOLD' | 'UNDERPERFORMING' | 'DEFAULTED';
 
+// ============ MAIN COMPONENT ============
 export default function InvestmentManagementScreen(): React.JSX.Element {
   const router = useRouter();
 
+  // ============ STATE ============
   const [groupId, setGroupId] = useState('');
   const [adminId, setAdminId] = useState('');
   const [groupData, setGroupData] = useState<Group | null>(null);
@@ -86,17 +96,26 @@ export default function InvestmentManagementScreen(): React.JSX.Element {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   
-  // Enhanced states for investment tracking
   const [updateModalVisible, setUpdateModalVisible] = useState(false);
   const [selectedInvestment, setSelectedInvestment] = useState<Investment | null>(null);
   const [newCurrentValue, setNewCurrentValue] = useState('');
   const [updating, setUpdating] = useState(false);
   
-  // NEW: Filter states
   const [filterType, setFilterType] = useState<string>('ALL');
   const [filterStatus, setFilterStatus] = useState<string>('ALL');
   const [nearingMaturity, setNearingMaturity] = useState<Investment[]>([]);
   
+  // AI States
+  const [showAIChat, setShowAIChat] = useState(false);
+  const [showRecommendations, setShowRecommendations] = useState(true);
+  
+  // Animation
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+
+// ✅ ADD THESE TWO NEW STATES
+const [showRecommendationDetail, setShowRecommendationDetail] = useState(false);
+const [selectedRecommendation, setSelectedRecommendation] = useState<any>(null);
+
   const [formData, setFormData] = useState<FormData>({
     investmentName: '',
     investmentType: '',
@@ -110,18 +129,24 @@ export default function InvestmentManagementScreen(): React.JSX.Element {
     approvedBy: '',
   });
 
-  // Investment type options
   const investmentTypes = [
     'STOCKS', 'BONDS', 'REAL_ESTATE', 'MUTUAL_FUNDS', 
     'FIXED_DEPOSIT', 'BUSINESS', 'OTHER'
   ];
 
-  // Risk level options
   const riskLevels = ['LOW', 'MEDIUM', 'HIGH', 'VERY_HIGH'];
-
-  // Status options for filtering
   const statusOptions: InvestmentStatus[] = ['ACTIVE', 'MATURED', 'SOLD', 'UNDERPERFORMING', 'DEFAULTED'];
 
+  // ============ ANIMATION ============
+  useEffect(() => {
+    Animated.timing(fadeAnim, {
+      toValue: 1,
+      duration: 800,
+      useNativeDriver: true,
+    }).start();
+  }, []);
+
+  // ============ API CALLS ============
   useEffect(() => {
     const fetchInitialData = async () => {
       try {
@@ -151,7 +176,6 @@ export default function InvestmentManagementScreen(): React.JSX.Element {
     fetchInitialData();
   }, []);
 
-  // NEW: Reusable API error handler
   const handleApiError = (error: unknown, defaultMessage: string) => {
     if (axios.isAxiosError(error)) {
       const message = error.response?.data?.message || error.message || defaultMessage;
@@ -177,7 +201,6 @@ export default function InvestmentManagementScreen(): React.JSX.Element {
       const response = await axios.get(`${API_BASE_URL}/members/by-group/${gId}`);
       setMembers(response.data);
       
-      // Set current user as default approver if they are a member
       const currentUserId = await AsyncStorage.getItem('userId');
       if (currentUserId && response.data.find((m: Member) => m.id === currentUserId)) {
         setFormData(prev => ({ ...prev, approvedBy: currentUserId }));
@@ -187,44 +210,49 @@ export default function InvestmentManagementScreen(): React.JSX.Element {
     }
   };
 
-  // UPDATED: Balance calculation now includes investments
   const fetchGroupBalance = async (gId: string) => {
-    try {
-      // Calculate balance from contributions, expenses, AND investments
-      const [contributionsRes, expensesRes, investmentsRes] = await Promise.all([
-        axios.get(`${API_BASE_URL}/contributions/group/${gId}`),
-        axios.get(`${API_BASE_URL}/expenses`),
-        axios.get(`${API_BASE_URL}/investments/group/${gId}`)
-      ]);
+  try {
+    const [contributionsRes, expensesRes, investmentsRes] = await Promise.all([
+      axios.get(`${API_BASE_URL}/contributions/group/${gId}`),
+      axios.get(`${API_BASE_URL}/expenses`),
+      axios.get(`${API_BASE_URL}/investments/group/${gId}`)
+    ]);
 
-      const totalContributions = contributionsRes.data.reduce(
-        (sum: number, contribution: any) => sum + contribution.amount, 0
-      );
+    // ✅ FIX: Only count COMPLETED contributions
+    const totalContributions = contributionsRes.data
+      .filter((contribution: any) => contribution.status === 'Completed')
+      .reduce((sum: number, contribution: any) => sum + contribution.amount, 0);
 
-      const groupExpenses = expensesRes.data.filter(
-        (expense: any) => expense.group?.id === gId
-      );
-      
-      const totalExpenses = groupExpenses.reduce(
-        (sum: number, expense: any) => sum + expense.amount, 0
-      );
+    console.log('💰 Total Contributions (Completed only):', totalContributions);
 
-      const groupInvestments = investmentsRes.data.filter(
-        (investment: any) => investment.group?.id === gId
-      );
-      
-      const totalInvested = groupInvestments.reduce(
-        (sum: number, investment: any) => sum + investment.amountInvested, 0
-      );
+    const groupExpenses = expensesRes.data.filter(
+      (expense: any) => expense.group?.id === gId
+    );
+    
+    const totalExpenses = groupExpenses.reduce(
+      (sum: number, expense: any) => sum + expense.amount, 0
+    );
 
-      // Available balance = Contributions - Expenses - Investments
-      const balance = totalContributions - totalExpenses - totalInvested;
-      setGroupBalance(balance);
-    } catch (err) {
-      console.error('❌ Error calculating balance:', err);
-      setGroupBalance(0);
-    }
-  };
+    console.log('💸 Total Expenses:', totalExpenses);
+
+    const groupInvestments = investmentsRes.data.filter(
+      (investment: any) => investment.group?.id === gId
+    );
+    
+    const totalInvested = groupInvestments.reduce(
+      (sum: number, investment: any) => sum + investment.amountInvested, 0
+    );
+
+    console.log('📈 Total Invested:', totalInvested);
+
+    const balance = totalContributions - totalExpenses - totalInvested;
+    console.log('💵 Calculated Balance:', balance);
+    setGroupBalance(balance);
+  } catch (err) {
+    console.error('❌ Error calculating balance:', err);
+    setGroupBalance(0);
+  }
+};
 
   const fetchGroupInvestments = async (gId: string) => {
     try {
@@ -254,25 +282,6 @@ export default function InvestmentManagementScreen(): React.JSX.Element {
     }
   };
 
-  // NEW: Fetch portfolio analytics from backend
-  const fetchPortfolioAnalytics = async (gId: string) => {
-    try {
-      const [totalInvestedRes, portfolioValueRes] = await Promise.all([
-        axios.get(`${API_BASE_URL}/investments/group/${gId}/total-invested`),
-        axios.get(`${API_BASE_URL}/investments/group/${gId}/portfolio-value`)
-      ]);
-
-      return {
-        serverTotalInvested: totalInvestedRes.data,
-        serverPortfolioValue: portfolioValueRes.data
-      };
-    } catch (err) {
-      console.error('❌ Error fetching portfolio analytics:', err);
-      return null;
-    }
-  };
-
-  // NEW: Fetch investments nearing maturity
   const fetchNearingMaturity = async (gId: string) => {
     try {
       const response = await axios.get(
@@ -285,7 +294,7 @@ export default function InvestmentManagementScreen(): React.JSX.Element {
     }
   };
 
-  // NEW: Update investment current value (IMPROVED VERSION)
+  // ============ INVESTMENT OPERATIONS ============
   const updateInvestmentValue = async () => {
     if (!selectedInvestment || !newCurrentValue || parseFloat(newCurrentValue) < 0) {
       Alert.alert('Validation', 'Please enter a valid current value.');
@@ -311,7 +320,7 @@ export default function InvestmentManagementScreen(): React.JSX.Element {
               setNewCurrentValue('');
               setSelectedInvestment(null);
               fetchGroupInvestments(groupId);
-              fetchGroupBalance(groupId); // Also refresh balance
+              fetchGroupBalance(groupId);
             }
           }
         ]
@@ -324,55 +333,52 @@ export default function InvestmentManagementScreen(): React.JSX.Element {
     }
   };
 
-  // NEW: Close investment (FIXED VERSION)
-  // NEW: Close investment (ENHANCED DEBUGGING VERSION)
-const closeInvestment = async (investment: Investment) => {
-  console.log('🔴 TEST: Starting close investment process');
-  
-  // Test the API call directly without any dialogs
-  try {
-    console.log('🔄 Making direct API call...');
-    const response = await axios.patch(
-      `${API_BASE_URL}/investments/${investment.id}/status`,
-      {},
-      { params: { status: 'SOLD' } }
-    );
-    
-    console.log('✅ SUCCESS: API Response:', response.status, response.data);
-    
-    // Refresh data
-    fetchGroupInvestments(groupId);
-    fetchGroupBalance(groupId);
-    
-    Alert.alert('Success', 'Investment closed successfully!');
-    
-  } catch (err: any) {
-    console.error('❌ FAILED: API Error:', err.message);
-    console.error('Response:', err.response?.data);
-    Alert.alert('Error', `Failed: ${err.message}`);
-  }
-};
-
-  // NEW: Get status color
-  const getStatusColor = (status: string) => {
-  switch (status) {
-    case 'ACTIVE': return '#4CAF50';      // Green
-    case 'SOLD': return '#757575';        // Gray
-    case 'MATURED': return '#2196F3';     // Blue
-    case 'UNDERPERFORMING': return '#FF9800'; // Orange/Yellow (warning)
-    case 'DEFAULTED': return '#F44336';   // Red (danger)
-    default: return '#FF9800';            // Orange for unknown
-  }
+  const closeInvestment = async (investment: Investment) => {
+    try {
+      const response = await axios.patch(
+        `${API_BASE_URL}/investments/${investment.id}/status`,
+        {},
+        { params: { status: 'SOLD' } }
+      );
+      
+      fetchGroupInvestments(groupId);
+      fetchGroupBalance(groupId);
+      Alert.alert('Success', 'Investment closed successfully!');
+      
+    } catch (err: any) {
+      console.error('❌ FAILED: API Error:', err.message);
+      Alert.alert('Error', `Failed: ${err.message}`);
+    }
   };
 
-  // NEW: Filter investments
+  // ============ HELPERS ============
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'ACTIVE': return '#4CAF50';
+      case 'SOLD': return '#757575';
+      case 'MATURED': return '#2196F3';
+      case 'UNDERPERFORMING': return '#FF9800';
+      case 'DEFAULTED': return '#F44336';
+      default: return '#FF9800';
+    }
+  };
+
+  const getRiskColor = (risk: string) => {
+    switch (risk) {
+      case 'LOW': return '#4CAF50';
+      case 'MEDIUM': return '#FFC107';
+      case 'HIGH': return '#FF9800';
+      case 'VERY_HIGH': return '#F44336';
+      default: return '#757575';
+    }
+  };
+
   const filteredInvestments = investments.filter(inv => {
     const typeMatch = filterType === 'ALL' || inv.investmentType === filterType;
     const statusMatch = filterStatus === 'ALL' || inv.status === filterStatus;
     return typeMatch && statusMatch;
   });
 
-  // NEW: Show update modal
   const showUpdateModal = (investment: Investment) => {
     setSelectedInvestment(investment);
     setNewCurrentValue(investment.currentValue.toString());
@@ -385,7 +391,6 @@ const closeInvestment = async (investment: Investment) => {
       [field]: value,
     }));
 
-    // Auto-set current value to match amount invested if empty
     if (field === 'amountInvested' && !formData.currentValue) {
       setFormData(prev => ({
         ...prev,
@@ -394,7 +399,6 @@ const closeInvestment = async (investment: Investment) => {
     }
   };
 
-  // NEW: Enhanced date validation
   const validateDates = (): boolean => {
     if (formData.maturityDate && formData.investmentDate) {
       const investmentDate = new Date(formData.investmentDate);
@@ -429,18 +433,15 @@ const closeInvestment = async (investment: Investment) => {
       return false;
     }
 
-    // Validate return rate
     if (formData.expectedReturnRate && parseFloat(formData.expectedReturnRate) < 0) {
       Alert.alert('Validation', 'Return rate cannot be negative.');
       return false;
     }
 
-    // Add date validation
     if (!validateDates()) {
       return false;
     }
 
-    // Check if group has sufficient balance
     const investmentAmount = parseFloat(formData.amountInvested);
     
     if (investmentAmount > groupBalance) {
@@ -490,8 +491,6 @@ const closeInvestment = async (investment: Investment) => {
         mansoftTenantId: await AsyncStorage.getItem('mansoftTenantId') || 'tenant-001',
       };
 
-      console.log('Submitting investment payload:', JSON.stringify(payload, null, 2));
-
       await axios.post(`${API_BASE_URL}/investments`, payload);
 
       Alert.alert(
@@ -501,7 +500,6 @@ const closeInvestment = async (investment: Investment) => {
           {
             text: 'OK',
             onPress: () => {
-              // Reset form and refresh ALL data
               setFormData({
                 investmentName: '',
                 investmentType: '',
@@ -515,7 +513,6 @@ const closeInvestment = async (investment: Investment) => {
                 approvedBy: adminId,
               });
               
-              // ✅ Refresh both balance and investments
               fetchGroupBalance(groupId);
               fetchGroupInvestments(groupId);
               fetchNearingMaturity(groupId);
@@ -531,16 +528,32 @@ const closeInvestment = async (investment: Investment) => {
     }
   };
 
+  // ============ CALCULATIONS ============
   const investmentAmount = parseFloat(formData.amountInvested) || 0;
   const remainingBalance = groupBalance - investmentAmount;
 
-  // Calculate portfolio performance
   const totalPortfolioValue = investments.reduce((sum, inv) => sum + inv.currentValue, 0);
   const totalInvested = investments.reduce((sum, inv) => sum + inv.amountInvested, 0);
   const portfolioReturn = totalInvested > 0 ? ((totalPortfolioValue - totalInvested) / totalInvested) * 100 : 0;
 
+  const getInvestmentContext = (): InvestmentContext => {
+    return {
+      totalContributions: groupBalance + totalInvested,
+      totalInvested: totalInvested,
+      portfolioValue: totalPortfolioValue,
+      portfolioReturn: portfolioReturn,
+      activeInvestments: investments.filter(i => i.status === 'ACTIVE').length,
+      riskLevel: 'MEDIUM',
+      recentTransactions: investments.slice(0, 5),
+      availableBalance: groupBalance,
+      groupName: groupData?.groupName || 'My Group',
+    };
+  };
+
+  // ============ RENDER ============
   return (
     <SafeAreaView style={styles.safeArea}>
+      {/* Header */}
       <View style={styles.headerContainer}>
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
           <Image source={require('../../../assets/images/logo.png')} style={styles.logo} />
@@ -553,300 +566,429 @@ const closeInvestment = async (investment: Investment) => {
         </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={styles.container}>
-        <Text style={styles.title}>Investment Management</Text>
+      <Animated.ScrollView 
+        contentContainerStyle={[styles.container, { opacity: fadeAnim }]}
+        showsVerticalScrollIndicator={false}
+      >
+        <Text style={styles.title}>💰 Investment Management</Text>
+        <Text style={styles.subtitle}>Track and manage your group's investments</Text>
         
-        {/* Balance Information */}
-        <View style={styles.balanceCard}>
-          <Text style={styles.balanceLabel}>Available for Investment</Text>
-          <Text style={styles.balanceAmount}>KES {groupBalance.toLocaleString()}</Text>
-          
-          {investmentAmount > 0 && (
-            <View style={styles.balancePreview}>
-              <Text style={styles.remainingLabel}>Balance After Investment:</Text>
-              <Text style={[
-                styles.remainingAmount,
-                { color: remainingBalance >= 0 ? '#2E7D32' : '#D32F2F' }
-              ]}>
-                KES {remainingBalance.toLocaleString()}
-              </Text>
+        {/* ===== AI ACTION BUTTONS ===== */}
+        <View style={styles.aiButtonContainer}>
+          <TouchableOpacity 
+            style={[styles.aiButton, styles.chatButton]}
+            onPress={() => setShowAIChat(true)}
+            activeOpacity={0.9}
+          >
+            <View style={styles.aiButtonContent}>
+              <Text style={styles.aiButtonIcon}>🤖</Text>
+              <View style={styles.aiButtonTextContainer}>
+                <Text style={styles.aiButtonText}>AI Advisor</Text>
+                <Text style={styles.aiButtonSubtext}>Chat with Gemini</Text>
+              </View>
+              <View style={styles.aiBadge}>
+                <Text style={styles.aiBadgeText}>✨</Text>
+              </View>
             </View>
-          )}
+          </TouchableOpacity>
+          
+          <TouchableOpacity 
+            style={[styles.aiButton, styles.recommendButton]}
+            onPress={() => setShowRecommendations(!showRecommendations)}
+            activeOpacity={0.9}
+          >
+            <View style={styles.aiButtonContent}>
+              <Text style={styles.aiButtonIcon}>💡</Text>
+              <View style={styles.aiButtonTextContainer}>
+                <Text style={styles.aiButtonText}>Recommendations</Text>
+                <Text style={styles.aiButtonSubtext}>
+                  {showRecommendations ? 'Hide insights' : 'Show AI insights'}
+                </Text>
+              </View>
+              <View style={[styles.aiBadge, showRecommendations && styles.aiBadgeActive]}>
+                <Text style={styles.aiBadgeText}>
+                  {showRecommendations ? '●' : '○'}
+                </Text>
+              </View>
+            </View>
+          </TouchableOpacity>
         </View>
 
-        {/* Portfolio Summary */}
-        {investments.length > 0 && (
-          <View style={styles.portfolioCard}>
-            <Text style={styles.portfolioTitle}>Portfolio Summary</Text>
-            <View style={styles.portfolioRow}>
-              <View style={styles.portfolioItem}>
-                <Text style={styles.portfolioLabel}>Total Invested</Text>
-                <Text style={styles.portfolioValue}>KES {totalInvested.toLocaleString()}</Text>
-              </View>
-              <View style={styles.portfolioItem}>
-                <Text style={styles.portfolioLabel}>Current Value</Text>
-                <Text style={styles.portfolioValue}>KES {totalPortfolioValue.toLocaleString()}</Text>
-              </View>
-              <View style={styles.portfolioItem}>
-                <Text style={styles.portfolioLabel}>Return</Text>
+        {/* ===== DASHBOARD CARDS ===== */}
+        <View style={styles.dashboardGrid}>
+          <View style={[styles.dashboardCard, styles.balanceCard]}>
+            <View style={styles.dashboardCardIcon}>
+              <Text style={styles.dashboardCardIconText}>💰</Text>
+            </View>
+            <Text style={styles.dashboardCardLabel}>Available Balance</Text>
+            <Text style={styles.dashboardCardValue}>KES {groupBalance.toLocaleString()}</Text>
+            {investmentAmount > 0 && (
+              <View style={styles.balancePreview}>
+                <Text style={styles.balancePreviewLabel}>After investment:</Text>
                 <Text style={[
-                  styles.portfolioReturn,
-                  { color: portfolioReturn >= 0 ? '#2E7D32' : '#D32F2F' }
+                  styles.balancePreviewValue,
+                  { color: remainingBalance >= 0 ? '#4CAF50' : '#F44336' }
                 ]}>
-                  {portfolioReturn.toFixed(2)}%
+                  KES {remainingBalance.toLocaleString()}
                 </Text>
               </View>
+            )}
+          </View>
+
+          <View style={styles.dashboardRow}>
+            <View style={[styles.dashboardCard, styles.halfCard]}>
+              <Text style={styles.dashboardSmallLabel}>Total Invested</Text>
+              <Text style={styles.dashboardSmallValue}>KES {totalInvested.toLocaleString()}</Text>
             </View>
-          </View>
-        )}
-
-        {/* NEW: Nearing Maturity Alert */}
-        {nearingMaturity.length > 0 && (
-          <View style={styles.nearingMaturitySection}>
-            <Text style={styles.warningTitle}>⚠️ Investments Nearing Maturity</Text>
-            <Text style={styles.warningText}>
-              {nearingMaturity.length} investment(s) maturing in the next 30 days
-            </Text>
-          </View>
-        )}
-
-        {loading ? (
-          <ActivityIndicator size="large" color="#2E7D32" />
-        ) : (
-          <>
-            <View style={styles.formCard}>
-              <Text style={styles.sectionTitle}>New Investment</Text>
-              
-              <Text style={styles.label}>Investment Name *</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="e.g., Tech Mutual Fund, Real Estate Property"
-                value={formData.investmentName}
-                onChangeText={(val) => updateForm('investmentName', val)}
-              />
-
-              <Text style={styles.label}>Investment Type *</Text>
-              <Picker
-                selectedValue={formData.investmentType}
-                onValueChange={(val) => updateForm('investmentType', val)}
-                style={styles.picker}
-              >
-                <Picker.Item label="Select investment type..." value="" />
-                {investmentTypes.map((type) => (
-                  <Picker.Item 
-                    key={type} 
-                    label={type.replace('_', ' ')} 
-                    value={type} 
-                  />
-                ))}
-              </Picker>
-
-              <Text style={styles.label}>Amount Invested (KES) *</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Enter amount"
-                keyboardType="numeric"
-                value={formData.amountInvested}
-                onChangeText={(val) => updateForm('amountInvested', val)}
-              />
-
-              <Text style={styles.label}>Current Value (KES)</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Current market value"
-                keyboardType="numeric"
-                value={formData.currentValue}
-                onChangeText={(val) => updateForm('currentValue', val)}
-              />
-
-              <Text style={styles.label}>Investment Date *</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="YYYY-MM-DD"
-                value={formData.investmentDate}
-                onChangeText={(val) => updateForm('investmentDate', val)}
-              />
-
-              <Text style={styles.label}>Maturity Date</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="YYYY-MM-DD (optional)"
-                value={formData.maturityDate}
-                onChangeText={(val) => updateForm('maturityDate', val)}
-              />
-
-              <Text style={styles.label}>Expected Return Rate (%)</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Expected annual return"
-                keyboardType="numeric"
-                value={formData.expectedReturnRate}
-                onChangeText={(val) => updateForm('expectedReturnRate', val)}
-              />
-
-              <Text style={styles.label}>Risk Level</Text>
-              <Picker
-                selectedValue={formData.riskLevel}
-                onValueChange={(val) => updateForm('riskLevel', val)}
-                style={styles.picker}
-              >
-                {riskLevels.map((level) => (
-                  <Picker.Item 
-                    key={level} 
-                    label={level} 
-                    value={level} 
-                  />
-                ))}
-              </Picker>
-
-              <Text style={styles.label}>Description</Text>
-              <TextInput
-                style={[styles.input, styles.textArea]}
-                placeholder="Investment details, strategy, notes..."
-                value={formData.description}
-                onChangeText={(val) => updateForm('description', val)}
-                multiline
-                numberOfLines={3}
-              />
-
-              <Text style={styles.label}>Approved By *</Text>
-              <Picker
-                selectedValue={formData.approvedBy}
-                onValueChange={(val) => updateForm('approvedBy', val)}
-                style={styles.picker}
-              >
-                <Picker.Item label="Select approver..." value="" />
-                {members.map((member) => (
-                  <Picker.Item 
-                    key={member.id} 
-                    label={`${member.firstName} ${member.lastName} (${member.role})`} 
-                    value={member.id} 
-                  />
-                ))}
-              </Picker>
-
-              <Text style={styles.helperText}>
-                * Investments will be deducted from the group's available balance
+            <View style={[styles.dashboardCard, styles.halfCard]}>
+              <Text style={styles.dashboardSmallLabel}>Portfolio Return</Text>
+              <Text style={[
+                styles.dashboardSmallValue,
+                { color: portfolioReturn >= 0 ? '#4CAF50' : '#F44336' }
+              ]}>
+                {portfolioReturn >= 0 ? '↑' : '↓'} {Math.abs(portfolioReturn).toFixed(2)}%
               </Text>
             </View>
+          </View>
+        </View>
 
-            <TouchableOpacity 
-              style={[
-                styles.submitBtn, 
-                submitting && styles.submitBtnDisabled
-              ]} 
-              onPress={handleSubmit}
-              disabled={submitting}
-            >
-              {submitting ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={styles.submitBtnText}>
-                  Create Investment {investmentAmount > 0 && `(KES ${investmentAmount.toLocaleString()})`}
-                </Text>
-              )}
-            </TouchableOpacity>
+        {/* ===== AI RECOMMENDATIONS ===== */}
+{showRecommendations && (
+  <InvestmentRecommendations 
+    context={getInvestmentContext()}
+    onRecommendationSelect={(rec) => {
+      Alert.alert(
+        rec.type.replace('_', ' '),
+        `${rec.suggestion}\n\n${rec.reasoning}\n\n📊 Expected Return: ${rec.expectedReturn > 0 ? '+' : ''}${rec.expectedReturn}%\n⚠️ Risk Score: ${rec.riskScore}/10`
+      );
+    }}
+    onMoreInfo={(rec) => {
+      // ✅ THIS IS THE PROBLEM - MAKE SURE THIS CODE IS EXACTLY THIS
+      console.log('📖 More Info clicked in InvestmentManagementScreen:', rec.suggestion);
+      console.log('Setting selectedRecommendation:', rec);
+      setSelectedRecommendation(rec);
+      console.log('Setting showRecommendationDetail to true');
+      setShowRecommendationDetail(true);
+    }}
+  />
+)}
 
-            {/* Investment Portfolio Section */}
-            <View style={styles.portfolioSection}>
-              <View style={styles.portfolioHeader}>
-                <Text style={styles.portfolioSectionTitle}>Investment Portfolio</Text>
-                <Text style={styles.portfolioCount}>({filteredInvestments.length} investments)</Text>
+        {/* ===== PORTFOLIO SUMMARY ===== */}
+        {investments.length > 0 && (
+          <View style={styles.portfolioCard}>
+            <View style={styles.portfolioCardHeader}>
+              <Text style={styles.portfolioCardTitle}>📈 Portfolio Summary</Text>
+              <Text style={styles.portfolioCardCount}>{investments.length} investments</Text>
+            </View>
+            <View style={styles.portfolioStats}>
+              <View style={styles.portfolioStat}>
+                <Text style={styles.portfolioStatLabel}>Total Invested</Text>
+                <Text style={styles.portfolioStatValue}>KES {totalInvested.toLocaleString()}</Text>
+              </View>
+              <View style={styles.portfolioStatDivider} />
+              <View style={styles.portfolioStat}>
+                <Text style={styles.portfolioStatLabel}>Current Value</Text>
+                <Text style={styles.portfolioStatValue}>KES {totalPortfolioValue.toLocaleString()}</Text>
+              </View>
+            </View>
+          </View>
+        )}
+
+        {/* ===== NEARING MATURITY ALERT ===== */}
+        {nearingMaturity.length > 0 && (
+          <View style={styles.maturityAlert}>
+            <Ionicons name="warning" size={20} color="#FF9800" />
+            <View style={styles.maturityAlertContent}>
+              <Text style={styles.maturityAlertTitle}>⚠️ Nearing Maturity</Text>
+              <Text style={styles.maturityAlertText}>
+                {nearingMaturity.length} investment(s) maturing in 30 days
+              </Text>
+            </View>
+          </View>
+        )}
+
+        {/* ===== LOADING ===== */}
+        {loading ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color="#2E7D32" />
+            <Text style={styles.loadingText}>Loading investments...</Text>
+          </View>
+        ) : (
+          <>
+            {/* ===== NEW INVESTMENT FORM ===== */}
+            <View style={styles.formCard}>
+              <Text style={styles.formCardTitle}>➕ New Investment</Text>
+              
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Investment Name *</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="e.g., Tech Mutual Fund"
+                  placeholderTextColor="#999"
+                  value={formData.investmentName}
+                  onChangeText={(val) => updateForm('investmentName', val)}
+                />
               </View>
 
-              {/* NEW: Filter Controls */}
-              <View style={styles.filterContainer}>
-                <View style={styles.filterGroup}>
-                  <Text style={styles.filterLabel}>Type:</Text>
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Investment Type *</Text>
+                <View style={styles.pickerWrapper}>
                   <Picker
-                    selectedValue={filterType}
-                    onValueChange={setFilterType}
-                    style={styles.filterPicker}
+                    selectedValue={formData.investmentType}
+                    onValueChange={(val) => updateForm('investmentType', val)}
+                    style={styles.picker}
                   >
-                    <Picker.Item label="All Types" value="ALL" />
-                    {investmentTypes.map(type => (
-                      <Picker.Item key={type} label={type.replace('_', ' ')} value={type} />
+                    <Picker.Item label="Select investment type..." value="" />
+                    {investmentTypes.map((type) => (
+                      <Picker.Item 
+                        key={type} 
+                        label={type.replace('_', ' ')} 
+                        value={type} 
+                      />
                     ))}
                   </Picker>
                 </View>
-                
-                <View style={styles.filterGroup}>
-                  <Text style={styles.filterLabel}>Status:</Text>
+              </View>
+
+              <View style={styles.inputRow}>
+                <View style={[styles.inputGroup, styles.halfWidth]}>
+                  <Text style={styles.inputLabel}>Amount (KES) *</Text>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Enter amount"
+                    placeholderTextColor="#999"
+                    keyboardType="numeric"
+                    value={formData.amountInvested}
+                    onChangeText={(val) => updateForm('amountInvested', val)}
+                  />
+                </View>
+                <View style={[styles.inputGroup, styles.halfWidth]}>
+                  <Text style={styles.inputLabel}>Current Value</Text>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Current value"
+                    placeholderTextColor="#999"
+                    keyboardType="numeric"
+                    value={formData.currentValue}
+                    onChangeText={(val) => updateForm('currentValue', val)}
+                  />
+                </View>
+              </View>
+
+              <View style={styles.inputRow}>
+                <View style={[styles.inputGroup, styles.halfWidth]}>
+                  <Text style={styles.inputLabel}>Investment Date *</Text>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="YYYY-MM-DD"
+                    placeholderTextColor="#999"
+                    value={formData.investmentDate}
+                    onChangeText={(val) => updateForm('investmentDate', val)}
+                  />
+                </View>
+                <View style={[styles.inputGroup, styles.halfWidth]}>
+                  <Text style={styles.inputLabel}>Maturity Date</Text>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="YYYY-MM-DD"
+                    placeholderTextColor="#999"
+                    value={formData.maturityDate}
+                    onChangeText={(val) => updateForm('maturityDate', val)}
+                  />
+                </View>
+              </View>
+
+              <View style={styles.inputRow}>
+                <View style={[styles.inputGroup, styles.halfWidth]}>
+                  <Text style={styles.inputLabel}>Expected Return (%)</Text>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="e.g., 12.5"
+                    placeholderTextColor="#999"
+                    keyboardType="numeric"
+                    value={formData.expectedReturnRate}
+                    onChangeText={(val) => updateForm('expectedReturnRate', val)}
+                  />
+                </View>
+                <View style={[styles.inputGroup, styles.halfWidth]}>
+                  <Text style={styles.inputLabel}>Risk Level</Text>
+                  <View style={styles.pickerWrapper}>
+                    <Picker
+                      selectedValue={formData.riskLevel}
+                      onValueChange={(val) => updateForm('riskLevel', val)}
+                      style={styles.picker}
+                    >
+                      {riskLevels.map((level) => (
+                        <Picker.Item key={level} label={level} value={level} />
+                      ))}
+                    </Picker>
+                  </View>
+                </View>
+              </View>
+
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Description</Text>
+                <TextInput
+                  style={[styles.input, styles.textArea]}
+                  placeholder="Investment details, strategy, notes..."
+                  placeholderTextColor="#999"
+                  value={formData.description}
+                  onChangeText={(val) => updateForm('description', val)}
+                  multiline
+                  numberOfLines={3}
+                />
+              </View>
+
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Approved By *</Text>
+                <View style={styles.pickerWrapper}>
                   <Picker
-                    selectedValue={filterStatus}
-                    onValueChange={setFilterStatus}
-                    style={styles.filterPicker}
+                    selectedValue={formData.approvedBy}
+                    onValueChange={(val) => updateForm('approvedBy', val)}
+                    style={styles.picker}
                   >
-                    <Picker.Item label="All Statuses" value="ALL" />
-                    {statusOptions.map(status => (
-                      <Picker.Item key={status} label={status} value={status} />
+                    <Picker.Item label="Select approver..." value="" />
+                    {members.map((member) => (
+                      <Picker.Item 
+                        key={member.id} 
+                        label={`${member.firstName} ${member.lastName}`} 
+                        value={member.id} 
+                      />
                     ))}
                   </Picker>
+                </View>
+              </View>
+
+              <TouchableOpacity 
+                style={[styles.submitBtn, submitting && styles.submitBtnDisabled]} 
+                onPress={handleSubmit}
+                disabled={submitting}
+              >
+                {submitting ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={styles.submitBtnText}>
+                    💰 Create Investment
+                  </Text>
+                )}
+              </TouchableOpacity>
+            </View>
+
+            {/* ===== INVESTMENT PORTFOLIO ===== */}
+            <View style={styles.portfolioSection}>
+              <View style={styles.portfolioSectionHeader}>
+                <Text style={styles.portfolioSectionTitle}>📊 Investment Portfolio</Text>
+                <Text style={styles.portfolioSectionCount}>
+                  {filteredInvestments.length} of {investments.length}
+                </Text>
+              </View>
+
+              {/* Filters */}
+              <View style={styles.filterContainer}>
+                <View style={styles.filterGroup}>
+                  <Text style={styles.filterLabel}>Type</Text>
+                  <View style={styles.filterPickerWrapper}>
+                    <Picker
+                      selectedValue={filterType}
+                      onValueChange={setFilterType}
+                      style={styles.filterPicker}
+                      dropdownIconColor="#666"
+                    >
+                      <Picker.Item label="All Types" value="ALL" />
+                      {investmentTypes.map(type => (
+                        <Picker.Item key={type} label={type.replace('_', ' ')} value={type} />
+                      ))}
+                    </Picker>
+                  </View>
+                </View>
+                
+                <View style={styles.filterGroup}>
+                  <Text style={styles.filterLabel}>Status</Text>
+                  <View style={styles.filterPickerWrapper}>
+                    <Picker
+                      selectedValue={filterStatus}
+                      onValueChange={setFilterStatus}
+                      style={styles.filterPicker}
+                      dropdownIconColor="#666"
+                    >
+                      <Picker.Item label="All Statuses" value="ALL" />
+                      {statusOptions.map(status => (
+                        <Picker.Item key={status} label={status} value={status} />
+                      ))}
+                    </Picker>
+                  </View>
                 </View>
               </View>
 
               {filteredInvestments.length === 0 ? (
-                <Text style={styles.noInvestments}>
-                  {investments.length === 0 ? 'No investments yet' : 'No investments match your filters'}
-                </Text>
+                <View style={styles.emptyState}>
+                  <Text style={styles.emptyStateIcon}>📭</Text>
+                  <Text style={styles.emptyStateText}>
+                    {investments.length === 0 ? 'No investments yet' : 'No investments match your filters'}
+                  </Text>
+                </View>
               ) : (
                 filteredInvestments.map((investment) => (
                   <View key={investment.id} style={styles.investmentCard}>
-                    <View style={styles.investmentHeader}>
-                      <Text style={styles.investmentName}>{investment.investmentName}</Text>
-                      <View style={[
-                        styles.statusBadge,
-                        { 
-                          backgroundColor: getStatusColor(investment.status)
-                        }
-                      ]}>
-                        <Text style={styles.statusText}>{investment.status}</Text>
+                    <View style={styles.investmentCardHeader}>
+                      <View style={styles.investmentTitleContainer}>
+                        <View style={[styles.investmentDot, { backgroundColor: getStatusColor(investment.status) }]} />
+                        <Text style={styles.investmentName}>{investment.investmentName}</Text>
                       </View>
-                    </View>
-                    
-                    <View style={styles.investmentDetails}>
-                      <Text style={styles.investmentType}>{investment.investmentType.replace('_', ' ')}</Text>
-                      <Text style={styles.riskLevel}>Risk: {investment.riskLevel}</Text>
-                    </View>
-
-                    <View style={styles.investmentFinancials}>
-                      <View style={styles.financialItem}>
-                        <Text style={styles.financialLabel}>Invested</Text>
-                        <Text style={styles.financialValue}>KES {investment.amountInvested.toLocaleString()}</Text>
-                      </View>
-                      <View style={styles.financialItem}>
-                        <Text style={styles.financialLabel}>Current</Text>
-                        <Text style={styles.financialValue}>KES {investment.currentValue.toLocaleString()}</Text>
-                      </View>
-                      <View style={styles.financialItem}>
-                        <Text style={styles.financialLabel}>Return</Text>
-                        <Text style={[
-                          styles.returnValue,
-                          { 
-                            color: (investment.actualReturnRate || 0) >= 0 ? '#2E7D32' : '#D32F2F',
-                            fontWeight: 'bold'
-                          }
-                        ]}>
-                          {(investment.actualReturnRate || 0).toFixed(2)}%
+                      <View style={[styles.investmentStatusBadge, { backgroundColor: getStatusColor(investment.status) + '20' }]}>
+                        <Text style={[styles.investmentStatusText, { color: getStatusColor(investment.status) }]}>
+                          {investment.status}
                         </Text>
                       </View>
                     </View>
 
-                    {/* Action Buttons */}
+                    <View style={styles.investmentTypeContainer}>
+                      <Text style={styles.investmentType}>{investment.investmentType.replace('_', ' ')}</Text>
+                      <View style={[styles.investmentRiskBadge, { backgroundColor: getRiskColor(investment.riskLevel) + '20' }]}>
+                        <Text style={[styles.investmentRiskText, { color: getRiskColor(investment.riskLevel) }]}>
+                          {investment.riskLevel} Risk
+                        </Text>
+                      </View>
+                    </View>
+
+                    <View style={styles.investmentStats}>
+                      <View style={styles.investmentStat}>
+                        <Text style={styles.investmentStatLabel}>Invested</Text>
+                        <Text style={styles.investmentStatValue}>KES {investment.amountInvested.toLocaleString()}</Text>
+                      </View>
+                      <View style={styles.investmentStatDivider} />
+                      <View style={styles.investmentStat}>
+                        <Text style={styles.investmentStatLabel}>Current</Text>
+                        <Text style={styles.investmentStatValue}>KES {investment.currentValue.toLocaleString()}</Text>
+                      </View>
+                      <View style={styles.investmentStatDivider} />
+                      <View style={styles.investmentStat}>
+                        <Text style={styles.investmentStatLabel}>Return</Text>
+                        <Text style={[
+                          styles.investmentStatValue,
+                          { color: (investment.actualReturnRate || 0) >= 0 ? '#4CAF50' : '#F44336' }
+                        ]}>
+                          {(investment.actualReturnRate || 0).toFixed(1)}%
+                        </Text>
+                      </View>
+                    </View>
+
                     {investment.status === 'ACTIVE' && (
                       <View style={styles.investmentActions}>
                         <TouchableOpacity 
-                          style={styles.updateButton}
+                          style={[styles.investmentActionBtn, styles.updateActionBtn]}
                           onPress={() => showUpdateModal(investment)}
                         >
-                          <Text style={styles.updateButtonText}>Update Value</Text>
+                          <Ionicons name="trending-up" size={14} color="#fff" />
+                          <Text style={styles.investmentActionBtnText}>Update</Text>
                         </TouchableOpacity>
                         
                         <TouchableOpacity 
-                          style={styles.closeButton}
+                          style={[styles.investmentActionBtn, styles.closeActionBtn]}
                           onPress={() => closeInvestment(investment)}
                         >
-                          <Text style={styles.closeButtonText}>Close</Text>
+                          <Ionicons name="close" size={14} color="#fff" />
+                          <Text style={styles.investmentActionBtnText}>Close</Text>
                         </TouchableOpacity>
                       </View>
                     )}
@@ -856,22 +998,17 @@ const closeInvestment = async (investment: Investment) => {
                     )}
                     
                     <View style={styles.investmentFooter}>
-                      <View>
-                        <Text style={styles.investmentDate}>
-                          Started: {new Date(investment.investmentDate).toDateString()}
+                      <Text style={styles.investmentDate}>
+                        Started: {new Date(investment.investmentDate).toLocaleDateString()}
+                      </Text>
+                      {investment.maturityDate && (
+                        <Text style={[
+                          styles.investmentMaturity,
+                          { color: new Date(investment.maturityDate) < new Date() ? '#F44336' : '#FF9800' }
+                        ]}>
+                          Matures: {new Date(investment.maturityDate).toLocaleDateString()}
                         </Text>
-                        {investment.maturityDate && (
-                          <Text style={[
-                            styles.maturityDate,
-                            { color: new Date(investment.maturityDate) < new Date() ? '#D32F2F' : '#F44336' }
-                          ]}>
-                            Matures: {new Date(investment.maturityDate).toDateString()}
-                          </Text>
-                        )}
-                        <Text style={styles.lastUpdated}>
-                          Track your investment performance regularly
-                        </Text>
-                      </View>
+                      )}
                     </View>
                   </View>
                 ))
@@ -879,25 +1016,34 @@ const closeInvestment = async (investment: Investment) => {
             </View>
           </>
         )}
-      </ScrollView>
 
-      {/* Update Investment Modal */}
+        {/* Bottom spacing for nav */}
+        <View style={styles.bottomSpacing} />
+      </Animated.ScrollView>
+
+      {/* ===== UPDATE MODAL ===== */}
       <Modal
         visible={updateModalVisible}
         animationType="slide"
         transparent={true}
         onRequestClose={() => setUpdateModalVisible(false)}
       >
-        <View style={styles.modalContainer}>
+        <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>
-              Update {selectedInvestment?.investmentName}
-            </Text>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>
+                Update {selectedInvestment?.investmentName}
+              </Text>
+              <TouchableOpacity onPress={() => setUpdateModalVisible(false)}>
+                <Ionicons name="close" size={24} color="#666" />
+              </TouchableOpacity>
+            </View>
             
-            <Text style={styles.label}>Current Market Value (KES) *</Text>
+            <Text style={styles.inputLabel}>Current Market Value (KES) *</Text>
             <TextInput
               style={styles.input}
               placeholder="Enter current value"
+              placeholderTextColor="#999"
               keyboardType="numeric"
               value={newCurrentValue}
               onChangeText={setNewCurrentValue}
@@ -916,346 +1062,722 @@ const closeInvestment = async (investment: Investment) => {
 
             <View style={styles.modalButtons}>
               <TouchableOpacity 
-                style={[styles.modalButton, styles.cancelButton]}
+                style={[styles.modalBtn, styles.modalCancelBtn]}
                 onPress={() => {
                   setUpdateModalVisible(false);
                   setNewCurrentValue('');
                   setSelectedInvestment(null);
                 }}
               >
-                <Text style={styles.cancelButtonText}>Cancel</Text>
+                <Text style={styles.modalCancelBtnText}>Cancel</Text>
               </TouchableOpacity>
               
               <TouchableOpacity 
-                style={[styles.modalButton, styles.updateModalButton]}
+                style={[styles.modalBtn, styles.modalUpdateBtn]}
                 onPress={updateInvestmentValue}
                 disabled={updating}
               >
                 {updating ? (
-                  <ActivityIndicator color="#fff" />
+                  <ActivityIndicator color="#fff" size="small" />
                 ) : (
-                  <Text style={styles.updateButtonText}>Update Value</Text>
+                  <Text style={styles.modalUpdateBtnText}>Update Value</Text>
                 )}
               </TouchableOpacity>
             </View>
           </View>
         </View>
       </Modal>
+
+            {/* ===== RECOMMENDATION DETAIL MODAL ===== */}
+      <Modal
+        visible={showRecommendationDetail}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setShowRecommendationDetail(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { maxHeight: '85%' }]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>💡 Investment Details</Text>
+              <TouchableOpacity onPress={() => setShowRecommendationDetail(false)}>
+                <Ionicons name="close" size={24} color="#666" />
+              </TouchableOpacity>
+            </View>
+            
+            {selectedRecommendation && (
+              <ScrollView showsVerticalScrollIndicator={false}>
+                {/* Type Badge */}
+                <View style={styles.detailTypeContainer}>
+                  <Text style={styles.detailTypeIcon}>
+                    {selectedRecommendation.type === 'STOCKS' ? '📈' :
+                     selectedRecommendation.type === 'BONDS' ? '📊' :
+                     selectedRecommendation.type === 'REAL_ESTATE' ? '🏠' :
+                     selectedRecommendation.type === 'MUTUAL_FUNDS' ? '💰' :
+                     selectedRecommendation.type === 'FIXED_DEPOSIT' ? '🏦' :
+                     selectedRecommendation.type === 'BUSINESS' ? '💼' : '📈'}
+                  </Text>
+                  <Text style={styles.detailType}>
+                    {selectedRecommendation.type.replace('_', ' ')}
+                  </Text>
+                </View>
+
+                {/* Suggestion Title */}
+                <Text style={styles.detailTitle}>
+                  {selectedRecommendation.suggestion}
+                </Text>
+
+                {/* Reasoning Section */}
+                <View style={styles.detailSection}>
+                  <Text style={styles.detailSectionTitle}>📝 AI Reasoning</Text>
+                  <Text style={styles.detailReasoning}>
+                    {selectedRecommendation.reasoning}
+                  </Text>
+                </View>
+
+                {/* Stats */}
+                <View style={styles.detailStatsContainer}>
+                  <View style={styles.detailStat}>
+                    <Text style={styles.detailStatLabel}>Expected Return</Text>
+                    <Text style={[styles.detailStatValue, { color: '#4CAF50' }]}>
+                      {selectedRecommendation.expectedReturn > 0 ? '+' : ''}{selectedRecommendation.expectedReturn}%
+                    </Text>
+                  </View>
+                  <View style={styles.detailStatDivider} />
+                  <View style={styles.detailStat}>
+                    <Text style={styles.detailStatLabel}>Risk Score</Text>
+                    <Text style={[
+                      styles.detailStatValue,
+                      { 
+                        color: selectedRecommendation.riskScore <= 3 ? '#4CAF50' : 
+                               selectedRecommendation.riskScore <= 6 ? '#FFC107' : 
+                               selectedRecommendation.riskScore <= 8 ? '#FF9800' : '#F44336'
+                      }
+                    ]}>
+                      {selectedRecommendation.riskScore}/10
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Risk Level Bar */}
+                <View style={styles.detailRiskContainer}>
+                  <Text style={styles.detailRiskLabel}>Risk Level</Text>
+                  <View style={styles.detailRiskBarContainer}>
+                    <View 
+                      style={[
+                        styles.detailRiskBar,
+                        { 
+                          width: `${(selectedRecommendation.riskScore / 10) * 100}%`,
+                          backgroundColor: selectedRecommendation.riskScore <= 3 ? '#4CAF50' : 
+                                         selectedRecommendation.riskScore <= 6 ? '#FFC107' : 
+                                         selectedRecommendation.riskScore <= 8 ? '#FF9800' : '#F44336'
+                        }
+                      ]} 
+                    />
+                  </View>
+                  <Text style={styles.detailRiskText}>
+                    {selectedRecommendation.riskScore <= 3 ? '🟢 Low Risk - Safe investment with stable returns' : 
+                     selectedRecommendation.riskScore <= 6 ? '🟡 Medium Risk - Balanced risk and reward' : 
+                     selectedRecommendation.riskScore <= 8 ? '🟠 High Risk - Higher potential returns but more volatile' : 
+                     '🔴 Very High Risk - Significant risk, only for experienced investors'}
+                  </Text>
+                </View>
+
+                {/* Action Buttons */}
+                <View style={styles.detailActions}>
+                  <TouchableOpacity 
+                    style={[styles.detailActionBtn, styles.detailCreateBtn]}
+                    onPress={() => {
+                      // Pre-fill form with recommendation
+                      setFormData({
+                        ...formData,
+                        investmentName: selectedRecommendation.suggestion,
+                        investmentType: selectedRecommendation.type,
+                        expectedReturnRate: selectedRecommendation.expectedReturn.toString(),
+                        riskLevel: selectedRecommendation.riskScore <= 3 ? 'LOW' : 
+                                  selectedRecommendation.riskScore <= 6 ? 'MEDIUM' : 
+                                  selectedRecommendation.riskScore <= 8 ? 'HIGH' : 'VERY_HIGH',
+                        description: selectedRecommendation.reasoning,
+                      });
+                      setShowRecommendationDetail(false);
+                      Alert.alert(
+                        '✅ Form Pre-filled!',
+                        'Review the investment details below and click "Create Investment".'
+                      );
+                    }}
+                  >
+                    <Ionicons name="create" size={18} color="#fff" />
+                    <Text style={styles.detailActionText}>Create Investment</Text>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity 
+                    style={[styles.detailActionBtn, styles.detailChatBtn]}
+                    onPress={() => {
+                      setShowRecommendationDetail(false);
+                      setShowAIChat(true);
+                    }}
+                  >
+                    <Ionicons name="chatbubble" size={18} color="#2196F3" />
+                    <Text style={[styles.detailActionText, { color: '#2196F3' }]}>Ask AI</Text>
+                  </TouchableOpacity>
+                </View>
+              </ScrollView>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* ===== AI CHAT MODAL ===== */}
+      <InvestmentAIChat
+        visible={showAIChat}
+        onClose={() => setShowAIChat(false)}
+        context={getInvestmentContext()}
+      />
       
       <GroupAdminBottomNav current="none" />
     </SafeAreaView>
   );
 }
 
+// ============ STYLES ============
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#E3F2FD' },
+  safeArea: { 
+    flex: 1, 
+    backgroundColor: '#F5F9F5' 
+  },
+  
+  // ===== HEADER =====
   headerContainer: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingHorizontal: 15,
-    paddingVertical: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     alignItems: 'center',
-    backgroundColor: '#BBDEFB',
+    backgroundColor: '#FFFFFF',
     borderBottomWidth: 1,
-    borderBottomColor: '#90CAF9',
-  },
-  logo: { width: 35, height: 35, resizeMode: 'contain', marginRight: 8 },
-  logoText: { fontSize: 20, fontWeight: 'bold', color: '#000' },
-  backToHome: { color: '#1565C0', fontWeight: 'bold', fontSize: 14 },
-  container: { padding: 20, paddingBottom: 100 },
-  title: { 
-    fontSize: 22, 
-    fontWeight: 'bold', 
-    color: '#1733a5ff', 
-    marginBottom: 10,
-    textAlign: 'center',
-  },
-  balanceCard: {
-    backgroundColor: '#fff',
-    padding: 20,
-    borderRadius: 10,
-    marginBottom: 20,
+    borderBottomColor: '#E8F5E9',
     elevation: 3,
-    alignItems: 'center',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
+    shadowOpacity: 0.05,
     shadowRadius: 4,
   },
-  balanceLabel: { 
-    fontSize: 16, 
-    color: '#666', 
-    marginBottom: 8,
-    fontWeight: '600',
+  logo: { 
+    width: 32, 
+    height: 32, 
+    resizeMode: 'contain', 
+    marginRight: 8 
   },
-  balanceAmount: { 
-    fontSize: 28, 
+  logoText: { 
+    fontSize: 18, 
     fontWeight: 'bold', 
+    color: '#000' 
+  },
+  backToHome: { 
+    color: '#2E7D32', 
+    fontWeight: '600', 
+    fontSize: 14 
+  },
+
+  // ===== CONTAINER =====
+  container: { 
+    padding: 16, 
+    paddingBottom: 120 
+  },
+  title: { 
+    fontSize: 24, 
+    fontWeight: 'bold', 
+    color: '#1B5E20', 
+    marginBottom: 4,
+    textAlign: 'center',
+  },
+  subtitle: {
+    fontSize: 14,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+
+  // ===== AI BUTTONS =====
+  aiButtonContainer: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 20,
+  },
+  aiButton: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    padding: 14,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    borderWidth: 1,
+    borderColor: '#E8F5E9',
+  },
+  aiButtonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  chatButton: {
+    borderTopWidth: 3,
+    borderTopColor: '#4CAF50',
+  },
+  recommendButton: {
+    borderTopWidth: 3,
+    borderTopColor: '#2196F3',
+  },
+  aiButtonIcon: {
+    fontSize: 28,
+    marginRight: 12,
+  },
+  aiButtonTextContainer: {
+    flex: 1,
+  },
+  aiButtonText: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#333',
+  },
+  aiButtonSubtext: {
+    fontSize: 11,
+    color: '#888',
+    marginTop: 1,
+  },
+  aiBadge: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#F5F5F5',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  aiBadgeActive: {
+    backgroundColor: '#4CAF50',
+  },
+  aiBadgeText: {
+    fontSize: 14,
+    color: '#666',
+  },
+
+  // ===== DASHBOARD =====
+  dashboardGrid: {
+    marginBottom: 16,
+  },
+  dashboardCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+  },
+  balanceCard: {
+    marginBottom: 12,
+  },
+  dashboardCardIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#E8F5E9',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  dashboardCardIconText: {
+    fontSize: 20,
+  },
+  dashboardCardLabel: {
+    fontSize: 13,
+    color: '#888',
+    fontWeight: '500',
+  },
+  dashboardCardValue: {
+    fontSize: 26,
+    fontWeight: 'bold',
     color: '#2E7D32',
+    marginTop: 2,
+  },
+  dashboardRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  halfCard: {
+    flex: 1,
+  },
+  dashboardSmallLabel: {
+    fontSize: 11,
+    color: '#888',
+    fontWeight: '500',
+  },
+  dashboardSmallValue: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#333',
+    marginTop: 2,
   },
   balancePreview: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    width: '100%',
-    marginTop: 15,
-    paddingTop: 15,
+    marginTop: 10,
+    paddingTop: 10,
     borderTopWidth: 1,
-    borderTopColor: '#eee',
+    borderTopColor: '#F0F0F0',
   },
-  remainingLabel: { fontSize: 14, color: '#666', fontWeight: '500' },
-  remainingAmount: { fontSize: 16, fontWeight: 'bold' },
+  balancePreviewLabel: {
+    fontSize: 12,
+    color: '#888',
+  },
+  balancePreviewValue: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+
+  // ===== PORTFOLIO CARD =====
   portfolioCard: {
-    backgroundColor: '#fff',
-    padding: 15,
-    borderRadius: 10,
-    marginBottom: 20,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 16,
     elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
   },
-  portfolioTitle: {
+  portfolioCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  portfolioCardTitle: {
     fontSize: 16,
     fontWeight: 'bold',
     color: '#333',
-    marginBottom: 10,
-    textAlign: 'center',
   },
-  portfolioRow: {
+  portfolioCardCount: {
+    fontSize: 12,
+    color: '#888',
+  },
+  portfolioStats: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    justifyContent: 'space-around',
   },
-  portfolioItem: {
+  portfolioStat: {
     alignItems: 'center',
     flex: 1,
   },
-  portfolioLabel: {
-    fontSize: 12,
-    color: '#666',
-    marginBottom: 4,
+  portfolioStatLabel: {
+    fontSize: 11,
+    color: '#888',
   },
-  portfolioValue: {
-    fontSize: 14,
+  portfolioStatValue: {
+    fontSize: 16,
     fontWeight: 'bold',
     color: '#333',
+    marginTop: 2,
   },
-  portfolioReturn: {
-    fontSize: 14,
-    fontWeight: 'bold',
+  portfolioStatDivider: {
+    width: 1,
+    backgroundColor: '#E8F5E9',
   },
-  // NEW: Nearing Maturity Styles
-  nearingMaturitySection: {
-    backgroundColor: '#FFF3E0',
-    padding: 15,
-    borderRadius: 10,
-    marginBottom: 20,
+
+  // ===== MATURITY ALERT =====
+  maturityAlert: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFF8E1',
+    padding: 14,
+    borderRadius: 12,
+    marginBottom: 16,
     borderLeftWidth: 4,
     borderLeftColor: '#FF9800',
   },
-  warningTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#FF9800',
-    marginBottom: 5,
+  maturityAlertContent: {
+    marginLeft: 12,
+    flex: 1,
   },
-  warningText: {
+  maturityAlertTitle: {
     fontSize: 14,
-    color: '#FF9800',
+    fontWeight: 'bold',
+    color: '#E65100',
   },
+  maturityAlertText: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 1,
+  },
+
+  // ===== LOADING =====
+  loadingContainer: {
+    padding: 40,
+    alignItems: 'center',
+  },
+  loadingText: {
+    fontSize: 14,
+    color: '#888',
+    marginTop: 10,
+  },
+
+  // ===== FORM =====
   formCard: {
-    backgroundColor: '#fff',
-    padding: 20,
-    borderRadius: 10,
-    marginBottom: 20,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 16,
     elevation: 2,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 3,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
   },
-  sectionTitle: { 
-    fontSize: 18, 
-    fontWeight: 'bold', 
-    color: '#333', 
-    marginBottom: 20,
-    borderBottomWidth: 2,
-    borderBottomColor: '#E3F2FD',
-    paddingBottom: 10,
-  },
-  label: { 
-    fontWeight: 'bold', 
-    marginBottom: 8, 
+  formCardTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
     color: '#333',
-    fontSize: 15,
+    marginBottom: 16,
+  },
+  inputGroup: {
+    marginBottom: 14,
+  },
+  inputRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  halfWidth: {
+    flex: 1,
+  },
+  inputLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#555',
+    marginBottom: 4,
   },
   input: {
-    backgroundColor: '#f9f9f9',
-    borderRadius: 8,
+    backgroundColor: '#F8F9FA',
+    borderRadius: 10,
     padding: 12,
-    marginBottom: 20,
-    borderColor: '#ddd',
-    borderWidth: 1,
-    fontSize: 16,
+    fontSize: 14,
     color: '#333',
+    borderWidth: 1,
+    borderColor: '#E8F5E9',
   },
   textArea: {
     minHeight: 80,
     textAlignVertical: 'top',
   },
-  picker: { 
-    backgroundColor: '#f9f9f9', 
-    marginBottom: 20,
+  pickerWrapper: {
+    backgroundColor: '#F8F9FA',
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 8,
+    borderColor: '#E8F5E9',
+    overflow: 'hidden',
   },
-  helperText: {
-    fontSize: 12,
-    color: '#666',
-    fontStyle: 'italic',
-    marginTop: 10,
-    textAlign: 'center',
+  picker: {
+    height: 48,
+    color: '#333',
   },
   submitBtn: {
-    backgroundColor: '#2196F3',
-    padding: 16,
-    borderRadius: 10,
+    backgroundColor: '#2E7D32',
+    padding: 14,
+    borderRadius: 12,
     alignItems: 'center',
-    marginTop: 10,
+    marginTop: 4,
+  },
+  submitBtnDisabled: {
+    backgroundColor: '#A5D6A7',
+  },
+  submitBtnText: {
+    color: '#FFFFFF',
+    fontWeight: 'bold',
+    fontSize: 16,
+  },
+
+  // ===== PORTFOLIO SECTION =====
+  portfolioSection: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 16,
     elevation: 2,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 3,
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
   },
-  submitBtnDisabled: {
-    backgroundColor: '#90CAF9',
-  },
-  submitBtnText: { 
-    color: '#fff', 
-    fontWeight: 'bold', 
-    fontSize: 16,
-  },
-  // Portfolio Section Styles
-  portfolioSection: {
-    backgroundColor: '#fff',
-    padding: 15,
-    borderRadius: 10,
-    marginTop: 20,
-    elevation: 2,
-  },
-  portfolioHeader: {
+  portfolioSectionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 15,
-    borderBottomWidth: 2,
-    borderBottomColor: '#2196F3',
-    paddingBottom: 8,
+    marginBottom: 12,
   },
   portfolioSectionTitle: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: 'bold',
-    color: '#1565C0',
+    color: '#333',
   },
-  portfolioCount: {
-    fontSize: 14,
-    color: '#666',
+  portfolioSectionCount: {
+    fontSize: 12,
+    color: '#888',
   },
-  // NEW: Filter Styles
+
+  // ===== FILTERS =====
   filterContainer: {
     flexDirection: 'row',
-    marginBottom: 15,
-    gap: 10,
+    gap: 12,
+    marginBottom: 16,
   },
   filterGroup: {
     flex: 1,
   },
   filterLabel: {
-    fontSize: 12,
-    color: '#666',
-    marginBottom: 4,
+    fontSize: 11,
+    color: '#888',
     fontWeight: '500',
+    marginBottom: 2,
+  },
+  filterPickerWrapper: {
+    backgroundColor: '#F8F9FA',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E8F5E9',
+    overflow: 'hidden',
   },
   filterPicker: {
-    backgroundColor: '#f9f9f9',
-    borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 6,
+    height: 40,
+    color: '#333',
   },
-  noInvestments: {
-    fontStyle: 'italic',
+
+  // ===== EMPTY STATE =====
+  emptyState: {
+    padding: 30,
+    alignItems: 'center',
+  },
+  emptyStateIcon: {
+    fontSize: 40,
+    marginBottom: 8,
+  },
+  emptyStateText: {
+    fontSize: 14,
     color: '#888',
     textAlign: 'center',
-    paddingVertical: 20,
   },
+
+  // ===== INVESTMENT CARD =====
   investmentCard: {
     backgroundColor: '#F8F9FA',
-    padding: 15,
-    borderRadius: 8,
+    borderRadius: 12,
+    padding: 14,
     marginBottom: 12,
     borderLeftWidth: 4,
     borderLeftColor: '#2196F3',
   },
-  investmentHeader: {
+  investmentCardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 8,
   },
-  investmentName: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#333',
-    flex: 1,
-  },
-  statusBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  statusText: {
-    color: '#fff',
-    fontSize: 10,
-    fontWeight: 'bold',
-  },
-  investmentDetails: {
+  investmentTitleContainer: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 10,
-  },
-  investmentType: {
-    fontSize: 14,
-    color: '#666',
-    fontWeight: '500',
-  },
-  riskLevel: {
-    fontSize: 12,
-    color: '#FF9800',
-    fontWeight: '500',
-  },
-  investmentFinancials: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 10,
-    backgroundColor: '#fff',
-    padding: 10,
-    borderRadius: 6,
-  },
-  financialItem: {
     alignItems: 'center',
     flex: 1,
   },
-  financialLabel: {
-    fontSize: 11,
-    color: '#666',
-    marginBottom: 2,
+  investmentDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 8,
   },
-  financialValue: {
-    fontSize: 12,
+  investmentName: {
+    fontSize: 15,
     fontWeight: 'bold',
     color: '#333',
+    flex: 1,
   },
-  returnValue: {
-    fontSize: 12,
+  investmentStatusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+  },
+  investmentStatusText: {
+    fontSize: 10,
     fontWeight: 'bold',
+  },
+  investmentTypeContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  investmentType: {
+    fontSize: 13,
+    color: '#666',
+    fontWeight: '500',
+    marginRight: 8,
+  },
+  investmentRiskBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 12,
+  },
+  investmentRiskText: {
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  investmentStats: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    backgroundColor: '#FFFFFF',
+    padding: 10,
+    borderRadius: 8,
+    marginBottom: 10,
+  },
+  investmentStat: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  investmentStatLabel: {
+    fontSize: 10,
+    color: '#888',
+  },
+  investmentStatValue: {
+    fontSize: 13,
+    fontWeight: 'bold',
+    color: '#333',
+    marginTop: 1,
+  },
+  investmentStatDivider: {
+    width: 1,
+    backgroundColor: '#E8F5E9',
+  },
+  investmentActions: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 8,
+  },
+  investmentActionBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 6,
+    borderRadius: 8,
+    gap: 4,
+  },
+  updateActionBtn: {
+    backgroundColor: '#2196F3',
+  },
+  closeActionBtn: {
+    backgroundColor: '#F44336',
+  },
+  investmentActionBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '600',
   },
   investmentDescription: {
     fontSize: 12,
@@ -1264,107 +1786,83 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   investmentFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     borderTopWidth: 1,
-    borderTopColor: '#E0E0E0',
+    borderTopColor: '#E8F5E9',
     paddingTop: 8,
   },
   investmentDate: {
     fontSize: 10,
     color: '#888',
   },
-  maturityDate: {
+  investmentMaturity: {
     fontSize: 10,
-    marginTop: 2,
+    fontWeight: '500',
   },
-  // Investment tracking styles
-  investmentActions: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 10,
-    marginBottom: 8,
+
+  // ===== BOTTOM SPACING =====
+  bottomSpacing: {
+    height: 20,
   },
-  updateButton: {
-    backgroundColor: '#2196F3',
-    paddingHorizontal: 15,
-    paddingVertical: 8,
-    borderRadius: 6,
-    flex: 1,
-    marginRight: 5,
-    alignItems: 'center',
-  },
-  closeButton: {
-    backgroundColor: '#FF5722',
-    paddingHorizontal: 15,
-    paddingVertical: 8,
-    borderRadius: 6,
-    flex: 1,
-    marginLeft: 5,
-    alignItems: 'center',
-  },
-  updateButtonText: {
-    color: '#fff',
-    fontWeight: 'bold',
-    fontSize: 12,
-  },
-  closeButtonText: {
-    color: '#fff',
-    fontWeight: 'bold',
-    fontSize: 12,
-  },
-  lastUpdated: {
-    fontSize: 10,
-    color: '#888',
-    fontStyle: 'italic',
-    marginTop: 4,
-  },
-  // Modal styles
-  modalContainer: {
+
+  // ===== MODAL =====
+  modalOverlay: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: 'rgba(0,0,0,0.5)',
+    padding: 20,
   },
   modalContent: {
-    backgroundColor: '#fff',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
     padding: 20,
-    borderRadius: 10,
     width: '90%',
     maxHeight: '80%',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
   },
   modalTitle: {
     fontSize: 18,
     fontWeight: 'bold',
-    marginBottom: 20,
-    textAlign: 'center',
     color: '#333',
+    flex: 1,
   },
   modalButtons: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 20,
+    gap: 12,
+    marginTop: 16,
   },
-  modalButton: {
-    padding: 12,
-    borderRadius: 8,
+  modalBtn: {
     flex: 1,
+    padding: 12,
+    borderRadius: 10,
     alignItems: 'center',
-    marginHorizontal: 5,
   },
-  cancelButton: {
-    backgroundColor: '#757575',
+  modalCancelBtn: {
+    backgroundColor: '#F5F5F5',
   },
-  cancelButtonText: {
-    color: '#fff',
-    fontWeight: 'bold',
+  modalCancelBtnText: {
+    color: '#666',
+    fontWeight: '600',
   },
-  updateModalButton: {
+  modalUpdateBtn: {
     backgroundColor: '#2196F3',
+  },
+  modalUpdateBtnText: {
+    color: '#FFFFFF',
+    fontWeight: 'bold',
   },
   returnPreview: {
     backgroundColor: '#E3F2FD',
-    padding: 10,
-    borderRadius: 6,
-    marginBottom: 15,
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 16,
   },
   returnPreviewText: {
     color: '#1565C0',
@@ -1378,4 +1876,129 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 4,
   },
+
+  // ===== DETAIL MODAL STYLES =====
+detailTypeContainer: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  backgroundColor: '#E8F5E9',
+  paddingHorizontal: 14,
+  paddingVertical: 8,
+  borderRadius: 20,
+  alignSelf: 'flex-start',
+  marginBottom: 12,
+},
+detailTypeIcon: {
+  fontSize: 18,
+  marginRight: 8,
+},
+detailType: {
+  fontSize: 14,
+  fontWeight: 'bold',
+  color: '#2E7D32',
+},
+detailTitle: {
+  fontSize: 20,
+  fontWeight: 'bold',
+  color: '#333',
+  marginBottom: 16,
+},
+detailSection: {
+  backgroundColor: '#F8F9FA',
+  padding: 14,
+  borderRadius: 10,
+  marginBottom: 16,
+},
+detailSectionTitle: {
+  fontSize: 14,
+  fontWeight: 'bold',
+  color: '#555',
+  marginBottom: 8,
+},
+detailReasoning: {
+  fontSize: 14,
+  color: '#444',
+  lineHeight: 20,
+},
+detailStatsContainer: {
+  flexDirection: 'row',
+  backgroundColor: '#FFFFFF',
+  padding: 14,
+  borderRadius: 10,
+  marginBottom: 16,
+  borderWidth: 1,
+  borderColor: '#E8F5E9',
+},
+detailStat: {
+  flex: 1,
+  alignItems: 'center',
+},
+detailStatLabel: {
+  fontSize: 11,
+  color: '#888',
+  marginBottom: 4,
+},
+detailStatValue: {
+  fontSize: 18,
+  fontWeight: 'bold',
+},
+detailStatDivider: {
+  width: 1,
+  backgroundColor: '#E8F5E9',
+},
+detailRiskContainer: {
+  backgroundColor: '#F8F9FA',
+  padding: 14,
+  borderRadius: 10,
+  marginBottom: 16,
+},
+detailRiskLabel: {
+  fontSize: 12,
+  color: '#888',
+  marginBottom: 6,
+},
+detailRiskBarContainer: {
+  height: 6,
+  backgroundColor: '#E0E0E0',
+  borderRadius: 3,
+  overflow: 'hidden',
+  marginBottom: 6,
+},
+detailRiskBar: {
+  height: '100%',
+  borderRadius: 3,
+},
+detailRiskText: {
+  fontSize: 12,
+  fontWeight: '500',
+  textAlign: 'center',
+},
+detailActions: {
+  flexDirection: 'row',
+  gap: 12,
+  marginTop: 8,
+  marginBottom: 4,
+},
+detailActionBtn: {
+  flex: 1,
+  flexDirection: 'row',
+  alignItems: 'center',
+  justifyContent: 'center',
+  padding: 14,
+  borderRadius: 10,
+  gap: 8,
+},
+detailCreateBtn: {
+  backgroundColor: '#2E7D32',
+},
+detailChatBtn: {
+  backgroundColor: '#E3F2FD',
+  borderWidth: 1,
+  borderColor: '#2196F3',
+},
+detailActionText: {
+  fontSize: 14,
+  fontWeight: 'bold',
+  color: '#fff',
+},
 });

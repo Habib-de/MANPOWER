@@ -7,19 +7,38 @@ import {
   ScrollView,
   TextInput,
   TouchableOpacity,
-  Alert,
   ActivityIndicator,
   Platform,
   Image,
   Modal,
   Pressable,
+  Linking,
 } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { WebView } from 'react-native-webview';
 
-const BASE_URL = 'http://192.168.0.101:8080/api';
+// ✅ Only import WebView on native platforms
+let WebView: any = null;
+if (Platform.OS !== 'web') {
+  WebView = require('react-native-webview').WebView;
+}
+
+const BASE_URL = 'http://172.20.10.2:8080/api';
+
+// ✅ Cross-platform alert function
+const showAlert = (title: string, message: string, onOk?: () => void) => {
+  console.log(`🔔 Alert: ${title} - ${message}`);
+  if (Platform.OS === 'web') {
+    window.alert(`${title}\n${message}`);
+    if (onOk) onOk();
+  } else {
+    const Alert = require('react-native').Alert;
+    Alert.alert(title, message, [
+      { text: 'OK', onPress: onOk }
+    ]);
+  }
+};
 
 interface Group {
   id: string;
@@ -40,7 +59,7 @@ interface MeetingFormData {
   meetingDate: string;
   meetingTime: string;
   targetAudience: string;
-  meetingType: 'zoom' | 'teams' | 'google_meet' | 'in_person' | 'webview';
+  meetingType: 'video' | 'in_person';
   groupId: string;
   duration: number;
 }
@@ -64,16 +83,13 @@ export default function ScheduleNewMeetingScreen() {
     meetingDate: '',
     meetingTime: '',
     targetAudience: 'GroupMembers',
-    meetingType: 'webview', // Default to webview
+    meetingType: 'video',
     groupId: '',
     duration: 60,
   });
 
-  // WebView meeting states
   const [showWebView, setShowWebView] = useState(false);
   const [currentMeeting, setCurrentMeeting] = useState<Meeting | null>(null);
-
-  // Custom modal-based date/time picker states
   const [showDateModal, setShowDateModal] = useState(false);
   const [showTimeModal, setShowTimeModal] = useState(false);
   const [tempDate, setTempDate] = useState('');
@@ -85,11 +101,15 @@ export default function ScheduleNewMeetingScreen() {
 
   const loadUserDataAndGroups = async () => {
     try {
+      console.log('🔄 Loading user data...');
+      
       const userEmail = await AsyncStorage.getItem('userEmail');
       const userRole = await AsyncStorage.getItem('userRole');
       const userGroupId = await AsyncStorage.getItem('userGroupId');
       const userFirstName = await AsyncStorage.getItem('userFirstName');
       const userLastName = await AsyncStorage.getItem('userLastName');
+
+      console.log('📋 User data loaded:', { userEmail, userRole, userGroupId, userFirstName, userLastName });
 
       if (userEmail && userRole && userFirstName && userLastName) {
         const user: User = {
@@ -103,41 +123,57 @@ export default function ScheduleNewMeetingScreen() {
         await loadGroups(user);
         
         if (user.role === 'GroupAdmin' && user.groupId) {
+          console.log('✅ Auto-selecting group for GroupAdmin:', user.groupId);
           setFormData(prev => ({ ...prev, groupId: user.groupId! }));
         }
+      } else {
+        console.error('❌ User data missing in AsyncStorage');
+        showAlert('Error', 'User data not found. Please login again.');
+        router.replace('/login');
       }
     } catch (error) {
-      console.error('Error loading user data:', error);
-      Alert.alert('Error', 'Failed to load user data');
+      console.error('❌ Error loading user data:', error);
+      showAlert('Error', 'Failed to load user data');
     }
   };
 
   const loadGroups = async (user: User) => {
     try {
+      console.log('🔄 Loading groups for user:', user.role);
+      
       if (user.role === 'GroupAdmin' && user.groupId) {
+        console.log('📡 Fetching GroupAdmin\'s group:', user.groupId);
         const response = await fetch(`${BASE_URL}/groups/${user.groupId}`);
+        
         if (response.ok) {
           const groupData = await response.json();
+          console.log('✅ Group data loaded:', groupData);
           setGroups([groupData]);
         } else {
-          console.error('Failed to fetch group:', response.status);
+          console.error('❌ Failed to fetch group:', response.status);
+          showAlert('Error', 'Failed to fetch your group details.');
         }
-      } else if (user.role === 'Admin') {
+      } else if (user.role === 'SuperAdmin') {
+        console.log('📡 Fetching all groups for SuperAdmin');
         const response = await fetch(`${BASE_URL}/groups`);
+        
         if (response.ok) {
           const groupsData = await response.json();
+          console.log('✅ All groups loaded:', groupsData.length);
           setGroups(groupsData);
         } else {
-          console.error('Failed to fetch groups:', response.status);
+          console.error('❌ Failed to fetch groups:', response.status);
+          showAlert('Error', 'Failed to fetch groups.');
         }
+      } else {
+        console.warn('⚠️ Unknown role or missing groupId:', user.role);
       }
     } catch (error) {
-      console.error('Error loading groups:', error);
-      Alert.alert('Error', 'Failed to load groups. Please check your connection.');
+      console.error('❌ Error loading groups:', error);
+      showAlert('Error', 'Failed to load groups. Please check your connection.');
     }
   };
 
-  // Custom date picker handlers
   const handleOpenDatePicker = () => {
     setTempDate(formData.meetingDate);
     setShowDateModal(true);
@@ -166,7 +202,6 @@ export default function ScheduleNewMeetingScreen() {
     setShowTimeModal(false);
   };
 
-  // Convert time string "HH:MM" to backend time format "HH:MM:00"
   const formatTimeForBackend = (timeString: string): string => {
     if (timeString && timeString.includes(':')) {
       const [hours, minutes] = timeString.split(':');
@@ -175,173 +210,192 @@ export default function ScheduleNewMeetingScreen() {
     return '00:00:00';
   };
 
-  const generateMeetingLink = (meetingType: string, title: string): string => {
-    const baseUrls: { [key: string]: string } = {
-      zoom: 'https://zoom.us/j/',
-      teams: 'https://teams.microsoft.com/l/meetup-join/',
-      google_meet: 'https://meet.google.com/',
-      webview: `https://meet.jit.si/${generateMeetingId(title)}` // Jitsi Meet for in-app meetings
-    };
-
-    const base = baseUrls[meetingType] || '';
-    const randomId = Math.random().toString(36).substring(2, 15);
-    return `${base}${randomId}`;
-  };
-
-  const generateMeetingId = (title: string): string => {
-    // Create a URL-friendly meeting ID from title
+  // ✅ Generate Jitsi Meet link
+  const generateMeetingLink = (title: string): string => {
     const cleanTitle = title
       .toLowerCase()
       .replace(/[^a-z0-9]/g, '-')
       .replace(/-+/g, '-')
       .substring(0, 30);
     const randomId = Math.random().toString(36).substring(2, 8);
-    return `${cleanTitle}-${randomId}`;
+    const meetingId = `${cleanTitle}-${randomId}`;
+    
+    return `https://meet.jit.si/${meetingId}`;
   };
 
   const validateForm = (): boolean => {
+    console.log('🔍 Validating form...', formData);
+    
     if (!formData.title.trim()) {
-      Alert.alert('Error', 'Please enter a meeting title');
+      showAlert('Error', 'Please enter a meeting title');
       return false;
     }
     if (!formData.meetingDate) {
-      Alert.alert('Error', 'Please select a meeting date');
+      showAlert('Error', 'Please select a meeting date');
       return false;
     }
     if (!formData.meetingTime) {
-      Alert.alert('Error', 'Please select a meeting time');
+      showAlert('Error', 'Please select a meeting time');
       return false;
     }
     if (!formData.groupId) {
-      Alert.alert('Error', 'Please select a group');
+      showAlert('Error', 'Please select a group');
       return false;
     }
     if (formData.duration < 15 || formData.duration > 480) {
-      Alert.alert('Error', 'Duration must be between 15 minutes and 8 hours');
+      showAlert('Error', 'Duration must be between 15 minutes and 8 hours');
       return false;
     }
 
     const meetingDateTime = new Date(`${formData.meetingDate}T${formData.meetingTime}`);
     if (meetingDateTime <= new Date()) {
-      Alert.alert('Error', 'Meeting must be scheduled for a future date and time');
+      showAlert('Error', 'Meeting must be scheduled for a future date and time');
       return false;
     }
 
     return true;
   };
 
-  const handleCreateMeeting = async () => {
-    if (!validateForm()) {
-      return;
-    }
-    
-    if (!currentUser) {
-      Alert.alert('Error', 'User not found');
-      return;
-    }
-
-    try {
-      setLoading(true);
-
-      // Generate meeting link based on type
-      const meetingLink = formData.meetingType !== 'in_person' 
-        ? generateMeetingLink(formData.meetingType, formData.title)
-        : undefined;
-
-      // Prepare meeting data according to backend expectations
-      const meetingData = {
-        group: {
-          id: formData.groupId,
-        },
-        meetingDate: formData.meetingDate,
-        meetingTime: formatTimeForBackend(formData.meetingTime),
+  // ✅ Open meeting based on platform
+  const openMeeting = (meetingLink: string, meetingTitle: string) => {
+    if (Platform.OS === 'web') {
+      window.open(meetingLink, '_blank');
+    } else {
+      setCurrentMeeting({
+        id: currentMeeting?.id || '',
+        title: meetingTitle,
         meetingLink: meetingLink,
-        title: formData.title,
-        agenda: formData.agenda,
-        calledByRole: currentUser.role,
-        targetAudience: formData.targetAudience,
-        duration: formData.duration,
-        createdBy: currentUser.email,
-        modifiedBy: currentUser.email,
-        createdOn: new Date().toISOString(),
-        modifiedOn: new Date().toISOString(),
-        mansoftTenantId: "default-tenant"
-      };
-
-      const response = await fetch(`${BASE_URL}/meetings`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(meetingData),
+        meetingType: formData.meetingType,
+        meetingDate: formData.meetingDate,
+        meetingTime: formData.meetingTime
       });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Failed to create meeting: ${errorText}`);
-      }
-
-      const createdMeeting = await response.json();
-      
-      // If it's a WebView meeting, show option to join immediately
-      if (formData.meetingType === 'webview' && meetingLink) {
-        Alert.alert(
-          'Meeting Scheduled Successfully!', 
-          `Would you like to join the meeting now?`,
-          [
-            {
-              text: 'Join Now',
-              onPress: () => {
-                setCurrentMeeting({
-                  id: createdMeeting.id,
-                  title: formData.title,
-                  meetingLink: meetingLink,
-                  meetingType: formData.meetingType,
-                  meetingDate: formData.meetingDate,
-                  meetingTime: formData.meetingTime
-                });
-                setShowWebView(true);
-              }
-            },
-            {
-              text: 'Later',
-              onPress: () => router.back()
-            }
-          ]
-        );
-      } else {
-        Alert.alert(
-          'Success', 
-          `Meeting "${formData.title}" scheduled successfully!${meetingLink ? `\n\nMeeting Link: ${meetingLink}` : ''}`,
-          [
-            {
-              text: 'OK',
-              onPress: () => router.back()
-            }
-          ]
-        );
-      }
-
-    } catch (error) {
-      console.error('Error creating meeting:', error);
-      Alert.alert(
-        'Error', 
-        `Failed to create meeting: ${error instanceof Error ? error.message : 'Unknown error'}`
-      );
-    } finally {
-      setLoading(false);
+      setShowWebView(true);
     }
   };
 
-  // Get minimum date for date input (today)
+  const handleCreateMeeting = async () => {
+  console.log('🚀 Starting meeting creation...');
+  
+  if (!validateForm()) {
+    return;
+  }
+  
+  if (!currentUser) {
+    showAlert('Error', 'User not found');
+    return;
+  }
+
+  try {
+    setLoading(true);
+
+    // ✅ Generate meeting link only for video meetings
+    const meetingLink = formData.meetingType === 'video' 
+      ? generateMeetingLink(formData.title)
+      : undefined;
+
+    console.log('📝 Creating meeting with data:', {
+      title: formData.title,
+      groupId: formData.groupId,
+      date: formData.meetingDate,
+      time: formData.meetingTime,
+      type: formData.meetingType,
+      link: meetingLink
+    });
+
+    const meetingData = {
+      group: {
+        id: formData.groupId,
+      },
+      meetingDate: formData.meetingDate,
+      meetingTime: formatTimeForBackend(formData.meetingTime),
+      meetingLink: meetingLink,
+      meetingType: formData.meetingType,
+      title: formData.title,
+      agenda: formData.agenda,
+      calledByRole: currentUser.role,
+      targetAudience: formData.targetAudience,
+      duration: formData.duration,
+      createdBy: currentUser.email,
+      modifiedBy: currentUser.email,
+      createdOn: new Date().toISOString(),
+      modifiedOn: new Date().toISOString(),
+      mansoftTenantId: "default-tenant"
+    };
+
+    console.log('📤 Sending to API:', JSON.stringify(meetingData, null, 2));
+
+    const response = await fetch(`${BASE_URL}/meetings`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(meetingData),
+    });
+
+    console.log('📥 API Response status:', response.status);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('❌ API Error Response:', errorText);
+      throw new Error(`Failed to create meeting: ${errorText}`);
+    }
+
+    const createdMeeting = await response.json();
+    console.log('✅ Meeting created successfully:', createdMeeting);
+    
+    // ✅ Show success message and navigate to meetings screen
+    const meetingTypeLabel = formData.meetingType === 'video' ? 'Video Meeting (Jitsi)' : 'In-Person Meeting';
+    const linkMessage = meetingLink ? `\n🔗 Link: ${meetingLink}` : '';
+    
+    showAlert(
+      '✅ Meeting Scheduled!', 
+      `"${formData.title}" has been scheduled successfully.\n\n` +
+      `📱 Type: ${meetingTypeLabel}${linkMessage}\n\n` +
+      `You can view and join this meeting from the Meetings screen.`,
+      () => {
+        // ✅ Navigate back to the meetings screen
+        router.back();
+      }
+    );
+
+  } catch (error) {
+    console.error('❌ Error creating meeting:', error);
+    showAlert(
+      'Error', 
+      `Failed to create meeting: ${error instanceof Error ? error.message : 'Unknown error'}`
+    );
+  } finally {
+    setLoading(false);
+  }
+};
+
   const getMinDate = () => {
     const today = new Date();
     return today.toISOString().split('T')[0];
   };
 
-  // WebView for in-app meetings
+  const getAudienceOptions = () => {
+    if (currentUser?.role === 'SuperAdmin') {
+      return [
+        { label: 'Group Admins', value: 'GroupAdmins' },
+        { label: 'Group Members', value: 'GroupMembers' },
+      ];
+    } else if (currentUser?.role === 'GroupAdmin') {
+      return [
+        { label: 'Group Members', value: 'GroupMembers' },
+      ];
+    }
+    return [
+      { label: 'Group Members', value: 'GroupMembers' },
+    ];
+  };
+
+  // ✅ Render WebView only on native platforms
   const renderWebViewMeeting = () => {
-    if (!currentMeeting?.meetingLink) return null;
+    if (Platform.OS === 'web') return null;
+    
+    const meetingLink = currentMeeting?.meetingLink;
+    if (!meetingLink || !WebView) return null;
 
     return (
       <Modal
@@ -351,31 +405,61 @@ export default function ScheduleNewMeetingScreen() {
       >
         <SafeAreaView style={styles.webviewContainer}>
           <View style={styles.webviewHeader}>
-            <Text style={styles.webviewTitle}>Meeting: {currentMeeting.title}</Text>
+            <Text style={styles.webviewTitle}>🎥 {currentMeeting.title}</Text>
             <TouchableOpacity 
               style={styles.closeButton}
               onPress={() => setShowWebView(false)}
             >
-              <Text style={styles.closeButtonText}>Close</Text>
+              <Text style={styles.closeButtonText}>✕ Leave</Text>
             </TouchableOpacity>
           </View>
           <WebView
-            source={{ uri: currentMeeting.meetingLink }}
+            source={{ uri: meetingLink }}
             style={styles.webview}
             allowsFullscreenVideo={true}
             javaScriptEnabled={true}
             domStorageEnabled={true}
             startInLoadingState={true}
+            allowsInlineMediaPlayback={true}
+            mediaPlaybackRequiresUserAction={false}
             renderLoading={() => (
               <View style={styles.loadingContainer}>
                 <ActivityIndicator size="large" color="#2E7D32" />
                 <Text style={styles.loadingText}>Loading meeting...</Text>
+                <Text style={styles.loadingSubtext}>Please wait while the meeting loads</Text>
+              </View>
+            )}
+            renderError={() => (
+              <View style={styles.errorContainer}>
+                <Text style={styles.errorEmoji}>😕</Text>
+                <Text style={styles.errorTitle}>Failed to load meeting</Text>
+                <Text style={styles.errorMessage}>
+                  Please check your internet connection and try again.
+                </Text>
+                <TouchableOpacity 
+                  style={styles.retryButton}
+                  onPress={() => {
+                    setShowWebView(false);
+                    Linking.openURL(meetingLink);
+                  }}
+                >
+                  <Text style={styles.retryButtonText}>Open in Browser</Text>
+                </TouchableOpacity>
               </View>
             )}
           />
         </SafeAreaView>
       </Modal>
     );
+  };
+
+  const getSubtitle = () => {
+    if (currentUser?.role === 'SuperAdmin') {
+      return 'Create meetings for Group Admins or Group Members across all groups';
+    } else if (currentUser?.role === 'GroupAdmin') {
+      return 'Create meetings for your group members only';
+    }
+    return 'Create a new meeting';
   };
 
   return (
@@ -396,9 +480,18 @@ export default function ScheduleNewMeetingScreen() {
 
       <ScrollView style={styles.container}>
         <Text style={styles.title}>Schedule New Meeting</Text>
-        <Text style={styles.subtitle}>
-          Create a new meeting for your {currentUser?.role === 'GroupAdmin' ? 'group' : 'organization'}
-        </Text>
+        <Text style={styles.subtitle}>{getSubtitle()}</Text>
+
+        {currentUser && (
+          <View style={styles.roleBadgeContainer}>
+            <Text style={styles.roleBadgeText}>👤 {currentUser.role}</Text>
+            {currentUser.role === 'GroupAdmin' && (
+              <Text style={styles.groupBadgeText}>
+                📁 Group: {groups[0]?.groupName || 'Loading...'}
+              </Text>
+            )}
+          </View>
+        )}
 
         {/* Meeting Title */}
         <View style={styles.inputGroup}>
@@ -424,7 +517,7 @@ export default function ScheduleNewMeetingScreen() {
           />
         </View>
 
-        {/* Date and Time - Cross Platform Solution */}
+        {/* Date and Time */}
         <View style={styles.row}>
           <View style={[styles.inputGroup, styles.halfWidth]}>
             <Text style={styles.label}>Date *</Text>
@@ -466,7 +559,7 @@ export default function ScheduleNewMeetingScreen() {
           />
         </View>
 
-        {/* Meeting Type */}
+        {/* Meeting Type - Simplified */}
         <View style={styles.inputGroup}>
           <Text style={styles.label}>Meeting Type *</Text>
           <View style={styles.pickerContainer}>
@@ -475,16 +568,23 @@ export default function ScheduleNewMeetingScreen() {
               onValueChange={(value) => setFormData(prev => ({ ...prev, meetingType: value }))}
               style={styles.picker}
             >
-              <Picker.Item label="In-App Video Meeting" value="webview" />
-              <Picker.Item label="Zoom Meeting" value="zoom" />
-              <Picker.Item label="Microsoft Teams" value="teams" />
-              <Picker.Item label="Google Meet" value="google_meet" />
-              <Picker.Item label="In-Person" value="in_person" />
+              <Picker.Item label="📱 Video Meeting (Jitsi Meet)" value="video" />
+              <Picker.Item label="📍 In-Person Meeting" value="in_person" />
             </Picker>
           </View>
-          {formData.meetingType === 'webview' && (
+          {formData.meetingType === 'video' && (
             <Text style={styles.helperText}>
-              Join the meeting directly within the app using video and audio
+              {/* 💡 Video meetings use Jitsi Meet - secure */}
+            </Text>
+          )}
+          {formData.meetingType === 'in_person' && (
+            <Text style={styles.helperText}>
+              📍 In-person meetings don't have a video link - members will attend physically.
+            </Text>
+          )}
+          {Platform.OS === 'web' && formData.meetingType === 'video' && (
+            <Text style={styles.helperText}>
+              {/* 🌐 On web, meetings will open in a new browser tab. */}
             </Text>
           )}
         </View>
@@ -498,15 +598,24 @@ export default function ScheduleNewMeetingScreen() {
               onValueChange={(value) => setFormData(prev => ({ ...prev, targetAudience: value }))}
               style={styles.picker}
             >
-              <Picker.Item label="Group Members" value="GroupMembers" />
-              <Picker.Item label="Group Admins" value="GroupAdmins" />
-              <Picker.Item label="All Users" value="AllUsers" />
+              {getAudienceOptions().map((option) => (
+                <Picker.Item 
+                  key={option.value} 
+                  label={option.label} 
+                  value={option.value} 
+                />
+              ))}
             </Picker>
           </View>
+          {currentUser?.role === 'GroupAdmin' && (
+            <Text style={styles.helperText}>
+              ✅ GroupAdmins can only create meetings for Group Members
+            </Text>
+          )}
         </View>
 
-        {/* Group Selection (Only for Admin) */}
-        {(currentUser?.role === 'Admin' && groups.length > 0) && (
+        {/* Group Selection - Only for SuperAdmin */}
+        {(currentUser?.role === 'SuperAdmin' && groups.length > 0) && (
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Select Group *</Text>
             <View style={styles.pickerContainer}>
@@ -528,10 +637,22 @@ export default function ScheduleNewMeetingScreen() {
           </View>
         )}
 
-        {/* Show warning if no groups available */}
-        {currentUser?.role === 'Admin' && groups.length === 0 && (
+        {/* Show group info for GroupAdmin */}
+        {currentUser?.role === 'GroupAdmin' && groups.length > 0 && (
+          <View style={styles.infoContainer}>
+            <Text style={styles.infoText}>
+              📁 Group: {groups[0]?.groupName}
+            </Text>
+            <Text style={styles.infoSubtext}>
+              Meetings will be created for this group
+            </Text>
+          </View>
+        )}
+
+        {/* Warning if no groups available for SuperAdmin */}
+        {currentUser?.role === 'SuperAdmin' && groups.length === 0 && (
           <View style={styles.warningContainer}>
-            <Text style={styles.warningText}>No groups available. Please create groups first.</Text>
+            <Text style={styles.warningText}>⚠️ No groups available. Please create groups first.</Text>
           </View>
         )}
 
@@ -554,7 +675,7 @@ export default function ScheduleNewMeetingScreen() {
               <ActivityIndicator color="#fff" />
             ) : (
               <Text style={styles.createButtonText}>
-                {formData.meetingType === 'webview' ? 'Create Meeting' : 'Create Meeting'}
+                {formData.meetingType === 'video' ? 'Create the Meeting' : 'Schedule Meeting'}
               </Text>
             )}
           </TouchableOpacity>
@@ -616,7 +737,7 @@ export default function ScheduleNewMeetingScreen() {
         </Modal>
       </ScrollView>
 
-      {/* WebView Meeting Modal */}
+      {/* WebView Meeting Modal - Only rendered on native */}
       {renderWebViewMeeting()}
     </SafeAreaView>
   );
@@ -681,6 +802,25 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#555',
     marginBottom: 30,
+  },
+  roleBadgeContainer: {
+    backgroundColor: '#E3F2FD',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 20,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  roleBadgeText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1565C0',
+  },
+  groupBadgeText: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#2E7D32',
   },
   inputGroup: {
     marginBottom: 20,
@@ -777,6 +917,26 @@ const styles = StyleSheet.create({
   buttonDisabled: {
     opacity: 0.6,
   },
+  infoContainer: {
+    backgroundColor: '#E8F5E9',
+    padding: 15,
+    borderRadius: 8,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#A5D6A7',
+  },
+  infoText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#2E7D32',
+    textAlign: 'center',
+  },
+  infoSubtext: {
+    fontSize: 12,
+    color: '#666',
+    textAlign: 'center',
+    marginTop: 4,
+  },
   warningContainer: {
     backgroundColor: '#FFEAA7',
     padding: 15,
@@ -788,7 +948,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontWeight: '600',
   },
-  // Modal Styles
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
@@ -845,7 +1004,6 @@ const styles = StyleSheet.create({
     color: 'white',
     fontWeight: 'bold',
   },
-  // WebView Styles
   webviewContainer: {
     flex: 1,
     backgroundColor: '#000',
@@ -857,6 +1015,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#2E7D32',
     paddingHorizontal: 16,
     paddingVertical: 12,
+    zIndex: 1,
   },
   webviewTitle: {
     color: 'white',
@@ -886,5 +1045,45 @@ const styles = StyleSheet.create({
   loadingText: {
     marginTop: 10,
     color: '#666',
+    fontSize: 16,
+  },
+  loadingSubtext: {
+    marginTop: 4,
+    color: '#999',
+    fontSize: 12,
+  },
+  errorContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+    backgroundColor: '#f5f5f5',
+  },
+  errorEmoji: {
+    fontSize: 48,
+    marginBottom: 16,
+  },
+  errorTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 8,
+  },
+  errorMessage: {
+    fontSize: 14,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  retryButton: {
+    backgroundColor: '#2E7D32',
+    paddingHorizontal: 30,
+    paddingVertical: 12,
+    borderRadius: 8,
+  },
+  retryButtonText: {
+    color: '#fff',
+    fontWeight: 'bold',
+    fontSize: 16,
   },
 });

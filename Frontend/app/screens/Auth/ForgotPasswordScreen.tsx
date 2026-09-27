@@ -12,7 +12,7 @@ import {
 import { router } from 'expo-router'; // Import router for navigation
 
 // Define your backend API base URL
-const BASE_URL =  'http://192.168.0.101:8080/api'; // Ensure this matches your backend's IP
+const BASE_URL =  'http://172.20.10.2:8080/api'; // Ensure this matches your backend's IP
 
 export default function ForgotPasswordScreen() {
   const [email, setEmail] = useState(''); // Changed to 'email' as per backend expectation

@@ -5,6 +5,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
 
@@ -13,6 +14,8 @@ public interface LoanRepository extends JpaRepository<Loan, String> {
     // ============ CRITICAL FOR LOAN REPAYMENTS - ADD THIS ============
     // Find active loans by member and status list (for repayments)
     List<Loan> findByMemberAndStatusIn(Member member, List<String> statuses);
+
+    
     
     // ============ EXISTING QUERIES (Keep these if you have them) ============
     
@@ -60,4 +63,13 @@ public interface LoanRepository extends JpaRepository<Loan, String> {
     // Performance monitoring: Find ML-approved loans with high default rate
     @Query("SELECT l FROM Loan l WHERE l.isMlApproved = true AND l.mlRiskLevel IN ('HIGH', 'VERY_HIGH') AND l.outstandingBalance > 0")
     List<Loan> findHighRiskMlLoansWithOutstandingBalance();
+
+    // ============ GUARANTOR QUERIES ============
+    
+    // Find all loans where a member is the guarantor (for capacity calculation)
+    List<Loan> findByGuarantorIdAndStatusIn(String guarantorId, List<String> statuses);
+    
+    // Calculate total guarantee amount a member is currently liable for
+    @Query("SELECT COALESCE(SUM(l.guarantorAmount), 0) FROM Loan l WHERE l.guarantor.id = ?1 AND l.status IN ('PENDING_GUARANTOR', 'APPROVED', 'ACTIVE', 'PENDING', 'OVERDUE')")
+    BigDecimal getTotalGuaranteeAmountByGuarantorId(String guarantorId);
 }

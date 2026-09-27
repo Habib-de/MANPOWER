@@ -13,11 +13,12 @@ import os
 from datetime import datetime, timedelta
 warnings.filterwarnings('ignore')
 
-from features import MemberChurnFeatureEngineer
+# Use the new churn_features instead of features
+from churn_features import ChurnFeatureEngineer
 
 class MemberChurnTrainer:
     def __init__(self):
-        self.feature_engineer = MemberChurnFeatureEngineer()
+        self.feature_engineer = ChurnFeatureEngineer()  # Changed to new class
         self.model = None
         self.scaler = StandardScaler()
         self.feature_names = None
@@ -26,7 +27,6 @@ class MemberChurnTrainer:
         """Load your CSV data from the data folder"""
         print("📂 Loading data...")
         
-        # Go up one level to access the data folder
         data_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
         
         members = pd.read_csv(os.path.join(data_path, 'members_ml_training.csv'))
@@ -42,10 +42,7 @@ class MemberChurnTrainer:
         return members, contributions, loans, notifications
     
     def create_labels(self, members, contributions, as_of_date, lookahead_months=6):
-        """
-        Create churn labels:
-        1 if member churned in next 'lookahead_months'
-        """
+        """Create churn labels"""
         future_date = as_of_date + timedelta(days=30*lookahead_months)
         
         labels = []
@@ -53,29 +50,18 @@ class MemberChurnTrainer:
         for _, member in members.iterrows():
             member_id = member['id']
             
-            # Get contributions in the lookahead window
             future_contribs = contributions[
                 (contributions['member_id'] == member_id) &
                 (pd.to_datetime(contributions['transactionDate']) > as_of_date) &
                 (pd.to_datetime(contributions['transactionDate']) <= future_date)
             ]
             
-            # Define churn (1 = churned, 0 = active)
             if member['status'] == 'Terminated':
-                # Terminated = definitely churned
                 churned = 1
-            elif member['status'] == 'Inactive':
-                # Inactive with no future contributions = churned
-                if len(future_contribs) == 0:
-                    churned = 1
-                else:
-                    churned = 0
-            elif member['status'] == 'Active':
-                # Active but no contributions in next 6 months = silent churn
-                if len(future_contribs) == 0:
-                    churned = 1
-                else:
-                    churned = 0
+            elif member['status'] == 'Inactive' and len(future_contribs) == 0:
+                churned = 1
+            elif len(future_contribs) == 0 and member['status'] == 'Active':
+                churned = 1
             else:
                 churned = 0
             
@@ -90,20 +76,15 @@ class MemberChurnTrainer:
     def prepare_training_data(self):
         """Prepare features and labels for training"""
         
-        # Load data
         members, contributions, loans, notifications = self.load_data()
         
-        # Convert dates
         members['joinDate'] = pd.to_datetime(members['joinDate'])
         contributions['transactionDate'] = pd.to_datetime(contributions['transactionDate'])
         loans['startDate'] = pd.to_datetime(loans['startDate'])
         notifications['sendDate'] = pd.to_datetime(notifications['sendDate'])
         
-        # Use multiple time snapshots for robust training
         snapshots = []
-        snapshot_labels = []
         
-        # Create snapshots every 3 months over 3 years
         start_date = datetime(2021, 1, 1)
         end_date = datetime(2023, 6, 30)
         
@@ -111,30 +92,25 @@ class MemberChurnTrainer:
         while current_date <= end_date:
             print(f"\n📸 Processing snapshot: {current_date.date()}")
             
-            # Create features at this snapshot
             features_df = self.feature_engineer.create_features(
                 members, contributions, loans, notifications, current_date
             )
             
-            # Create labels (look ahead 6 months)
             labels_df = self.create_labels(members, contributions, current_date, 6)
             
-            # Merge
             snapshot_data = features_df.merge(labels_df[['member_id', 'churned']], on='member_id')
             snapshot_data['snapshot_date'] = current_date
             
             snapshots.append(snapshot_data)
             
-            current_date += timedelta(days=90)  # 3 months
+            current_date += timedelta(days=90)
         
-        # Combine all snapshots
         full_data = pd.concat(snapshots, ignore_index=True)
         
         print(f"\n📊 Total samples: {len(full_data):,}")
         churned_count = full_data['churned'].sum()
         print(f"   Churned samples: {churned_count:,} ({full_data['churned'].mean()*100:.1f}%)")
         
-        # Prepare features (exclude metadata)
         feature_cols = [col for col in full_data.columns 
                        if col not in ['member_id', 'churned', 'snapshot_date']]
         
@@ -143,7 +119,6 @@ class MemberChurnTrainer:
         X = full_data[feature_cols]
         y = full_data['churned']
         
-        # Handle any missing values
         X = X.fillna(0)
         
         return X, y, full_data
@@ -155,10 +130,8 @@ class MemberChurnTrainer:
         print("🚀 TRAINING MEMBER CHURN PREDICTION MODEL")
         print("=" * 60)
         
-        # Prepare data
         X, y, full_data = self.prepare_training_data()
         
-        # Split data (80% train, 20% test)
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=0.2, random_state=42, stratify=y
         )
@@ -168,11 +141,9 @@ class MemberChurnTrainer:
         print(f"   Train churn rate: {y_train.mean()*100:.1f}%")
         print(f"   Test churn rate: {y_test.mean()*100:.1f}%")
         
-        # Scale features
         X_train_scaled = self.scaler.fit_transform(X_train)
         X_test_scaled = self.scaler.transform(X_test)
         
-        # Try multiple models
         models = {
             'XGBoost': XGBClassifier(
                 n_estimators=200,
@@ -209,11 +180,9 @@ class MemberChurnTrainer:
             print(f"\n🤖 Training {name}...")
             model.fit(X_train_scaled, y_train)
             
-            # Evaluate
             train_score = model.score(X_train_scaled, y_train)
             test_score = model.score(X_test_scaled, y_test)
             
-            # ROC-AUC
             y_pred_proba = model.predict_proba(X_test_scaled)[:, 1]
             roc_auc = roc_auc_score(y_test, y_pred_proba)
             
@@ -229,7 +198,6 @@ class MemberChurnTrainer:
         
         self.model = best_model
         
-        # Final evaluation
         print("\n" + "=" * 60)
         print(f"📊 FINAL MODEL EVALUATION ({best_model_name})")
         print("=" * 60)
@@ -243,23 +211,20 @@ class MemberChurnTrainer:
         
         print(f"\nROC-AUC Score: {roc_auc_score(y_test, y_pred_proba):.3f}")
         
-        # Feature importance
         if hasattr(self.model, 'feature_importances_'):
-            print("\n🔍 Top 10 Important Features:")
+            print("\n🔍 Top 15 Important Features:")
             importances = self.model.feature_importances_
-            indices = np.argsort(importances)[::-1][:10]
+            indices = np.argsort(importances)[::-1][:15]
             
             for i, idx in enumerate(indices):
                 print(f"   {i+1}. {self.feature_names[idx]}: {importances[idx]:.3f}")
         
-        # Save model
         self.save_model()
         
         return self.model
     
     def save_model(self):
         """Save model and scaler"""
-        import os
         os.makedirs('models', exist_ok=True)
         
         model_data = {

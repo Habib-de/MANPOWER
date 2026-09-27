@@ -12,11 +12,12 @@ import org.springframework.web.bind.annotation.*;
 import javax.validation.Valid;
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
+@CrossOrigin(origins = {"http://localhost:8081", "http://172.20.10.2:8081"})
 @RestController
 @RequestMapping("/api/contributions")
-@CrossOrigin(origins = "*") // Allow frontend to connect from any origin
 public class ContributionController {
 
     @Autowired
@@ -64,7 +65,7 @@ public class ContributionController {
         }
     }
 
-    // ✅ NEW: Get total contributions for a group
+    // ✅ GET: Total contributions for a group
     @GetMapping("/group/{groupId}/total")
     public ResponseEntity<Object> getTotalContributionsByGroup(@PathVariable String groupId) {
         try {
@@ -82,6 +83,21 @@ public class ContributionController {
         Optional<Contribution> contribution = contributionService.getContributionById(id);
         return contribution.map(value -> new ResponseEntity<>(value, HttpStatus.OK))
                            .orElseGet(() -> new ResponseEntity<>(HttpStatus.NOT_FOUND));
+    }
+
+    // ✅ NEW: PUT endpoint for updating a contribution
+    @PutMapping("/{id}")
+    public ResponseEntity<Object> updateContribution(
+            @PathVariable String id,
+            @RequestBody Map<String, Object> updates) {
+        try {
+            Contribution updatedContribution = contributionService.updateContribution(id, updates);
+            return new ResponseEntity<>(updatedContribution, HttpStatus.OK);
+        } catch (IllegalArgumentException e) {
+            return new ResponseEntity<>(new ErrorResponse(e.getMessage()), HttpStatus.NOT_FOUND);
+        } catch (Exception e) {
+            return new ResponseEntity<>(new ErrorResponse("Failed to update contribution: " + e.getMessage()), HttpStatus.INTERNAL_SERVER_ERROR);
+        }
     }
 
     @DeleteMapping("/{id}")

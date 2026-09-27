@@ -2,6 +2,7 @@ package com.manpower.repository;
 
 import com.manpower.entity.Member;
 import com.manpower.enums.MemberRole;
+import com.manpower.enums.MemberStatus;  // ✅ ADD THIS IMPORT
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
@@ -15,6 +16,9 @@ public interface MemberRepository extends JpaRepository<Member, String> {
 
     // ✅ Add this line to support fetching members by groupId
     List<Member> findByGroupId(String groupId);
+
+    // ✅ NEW: ADD THIS METHOD RIGHT HERE (after findByGroupId)
+    List<Member> findByGroupIdAndStatus(String groupId, MemberStatus status);
 
       // ✅ ADD THIS LINE RIGHT HERE (as the 4th method):
     Optional<Member> findByPhoneNumberContaining(String phoneNumber);

@@ -6,6 +6,8 @@ import com.manpower.entity.*;
 import com.manpower.enums.TransactionType;
 import com.manpower.enums.TransactionStatus;
 import com.manpower.enums.CampaignStatus;
+import com.manpower.enums.MemberRole;
+import com.manpower.enums.MemberStatus;
 import com.manpower.repository.*;
 import lombok.RequiredArgsConstructor;
 import org.json.JSONObject;
@@ -314,6 +316,123 @@ public class ContributionToCampaignService {
                         .build())
                 .sorted((a, b) -> b.getContributionDate().compareTo(a.getContributionDate()))
                 .collect(Collectors.toList());
+    }
+
+        /**
+     * Process a cash contribution to a volunteer campaign (Admin records on behalf of member)
+     */
+    @Transactional
+    public CampaignContributionResponse processCashContribution(
+            String campaignId,
+            String memberId,
+            String groupId,
+            BigDecimal amount,
+            String description,
+            String adminId,
+            String tenantId) {
+
+        // 1. Validate campaign exists and is open
+        VolunteerCampaign campaign = campaignRepository.findById(campaignId)
+                .orElseThrow(() -> new RuntimeException("Campaign not found with ID: " + campaignId));
+
+        // 2. Check if campaign belongs to the group
+        if (!campaign.getGroup().getId().equals(groupId)) {
+            throw new RuntimeException("Campaign does not belong to your group");
+        }
+
+        // 3. Check if campaign is open for contributions
+        LocalDate today = LocalDate.now();
+        if (campaign.getStatus() != CampaignStatus.ACTIVE) {
+            throw new RuntimeException("Campaign is not active. Current status: " + campaign.getStatus());
+        }
+        if (today.isBefore(campaign.getStartDate())) {
+            throw new RuntimeException("Campaign has not started yet. Starts on: " + campaign.getStartDate());
+        }
+        if (today.isAfter(campaign.getEndDate())) {
+            throw new RuntimeException("Campaign has ended on: " + campaign.getEndDate());
+        }
+
+        // 4. Get member and admin
+        Member member = memberRepository.findById(memberId)
+                .orElseThrow(() -> new RuntimeException("Member not found with ID: " + memberId));
+        
+        Member admin = memberRepository.findById(adminId)
+                .orElseThrow(() -> new RuntimeException("Admin not found with ID: " + adminId));
+
+        // 5. Validate member is active
+        if (member.getStatus() != MemberStatus.Active) {
+            throw new RuntimeException("Member is not active. Current status: " + member.getStatus());
+        }
+
+        // 6. Validate admin has permission (GroupAdmin or SuperAdmin)
+        if (admin.getRole() != MemberRole.GroupAdmin && admin.getRole() != MemberRole.SuperAdmin) {
+            throw new RuntimeException("Only GroupAdmin or SuperAdmin can record cash contributions");
+        }
+
+        // 7. Validate amount
+        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new RuntimeException("Amount must be greater than zero");
+        }
+
+        // 8. Create and save contribution
+        Contribution contribution = new Contribution();
+        contribution.setMember(member);
+        contribution.setGroup(campaign.getGroup());
+        contribution.setVolunteerCampaign(campaign);
+        contribution.setTransactionType(TransactionType.volunteer);
+        contribution.setAmount(amount);
+        contribution.setTransactionDate(LocalDate.now());
+        contribution.setPaymentMethod("Cash");
+        contribution.setStatus(TransactionStatus.Completed);
+        
+        // Build description
+        String fullDescription = String.format("Volunteer: %s | Cash payment recorded by %s %s",
+            campaign.getCampaignName(),
+            admin.getFirstName(),
+            admin.getLastName());
+        if (description != null && !description.isEmpty()) {
+            fullDescription += " | " + description;
+        }
+        contribution.setDescription(fullDescription);
+        
+        contribution.setCreatedBy(adminId);
+        contribution.setModifiedBy(adminId);
+        contribution.setMansoftTenantId(tenantId);
+
+        Contribution saved = contributionRepository.save(contribution);
+
+        // 9. Update campaign's raised amount
+        BigDecimal newRaisedAmount = campaign.getRaisedAmount().add(amount);
+        campaign.setRaisedAmount(newRaisedAmount);
+        
+        // 10. Check if campaign reached target amount
+        if (campaign.getTargetAmount() != null && 
+            newRaisedAmount.compareTo(campaign.getTargetAmount()) >= 0) {
+            campaign.setStatus(CampaignStatus.COMPLETED);
+        }
+        
+        campaignRepository.save(campaign);
+
+        // 11. Build response
+        return CampaignContributionResponse.builder()
+                .contributionId(saved.getId())
+                .campaignId(campaign.getId())
+                .campaignName(campaign.getCampaignName())
+                .memberId(member.getId())
+                .memberName(member.getFirstName() + " " + member.getLastName())
+                .amount(amount)
+                .contributionDate(LocalDateTime.now())
+                .status("COMPLETED")
+                .transactionId("CASH-" + System.currentTimeMillis())
+                .build();
+    }
+
+    /**
+     * Get all active members in a group for volunteer contributions
+     */
+    @Transactional(readOnly = true)
+    public List<Member> getGroupMembersForVolunteer(String groupId) {
+        return memberRepository.findByGroupIdAndStatus(groupId, MemberStatus.Active);
     }
 
     /**
