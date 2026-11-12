@@ -1,0 +1,6 @@
+member_id,eligibility_amount,eligibility_confidence,loan_risk,risk_probability,risk_confidence,sentiment_risk,sentiment_confidence,final_recommendation,final_confidence,decision_reasoning
+bebc2037-5cdb-4862-a35f-8c8c18be85f8,83213.59,0.95,VERY LOW,0.0102,0.85,MEDIUM,0.49332,APPROVE,0.9005304000000001,Strong financial profile with low risk
+ff25e319-3862-492f-a081-d9825eac3217,108848.18,0.6416438356164383,VERY LOW,0.0054,0.85,LOW,0.44,APPROVE,0.7531232876712329,Strong financial profile with low risk
+9fbb1990-eb75-4154-bb79-0aa9793a02ad,77935.13,0.95,VERY HIGH,0.8823000000000001,0.85,LOW,0.54,REJECT,0.7452,High default risk profile
+5754fa8f-4d7f-43cf-a428-7a2b5544a0e6,62688.48,0.95,VERY LOW,0.0,0.85,LOW,0.64856,APPROVE,0.9346832,Strong financial profile with low risk
+3705166a-a09f-4bff-b11c-97b57f04b8ff,122883.87,0.5846575342465753,VERY LOW,0.010700000000000001,0.85,LOW,0.59144,APPROVE,0.7613661150684933,Strong financial profile with low risk
